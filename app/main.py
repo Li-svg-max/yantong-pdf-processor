@@ -10,9 +10,10 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 
 from .cloud_client import CloudClient, CloudSettings
-from .models import PdfJobRequest, model_to_dict
+from .models import PdfJobRequest, SignedPdfJobRequest, model_to_dict
 from .pdf_pipeline import PipelineOptions, process_pdf
 from .queue_store import QueueStore, StoredTask
+from .request_auth import verify_ticket
 
 
 logging.basicConfig(
@@ -149,6 +150,25 @@ def create_job(
         "accepted": True,
         "created": created,
         "jobId": job.jobId,
+        "status": current["status"] if current else "queued",
+    }
+
+
+@app.post("/cloudbase/jobs", status_code=status.HTTP_202_ACCEPTED)
+def create_cloudbase_job(request: SignedPdfJobRequest) -> dict:
+    if not verify_ticket(
+        request.job,
+        request.expiresAt,
+        request.signature,
+        _expected_token(),
+    ):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid job ticket")
+    created = QUEUE.enqueue(request.job.jobId, model_to_dict(request.job))
+    current = QUEUE.status(request.job.jobId)
+    return {
+        "accepted": True,
+        "created": created,
+        "jobId": request.job.jobId,
         "status": current["status"] if current else "queued",
     }
 

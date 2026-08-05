@@ -21,8 +21,13 @@ class PdfJobRequest(BaseModel):
     options: ProcessingOptions = Field(default_factory=ProcessingOptions)
 
 
+class SignedPdfJobRequest(BaseModel):
+    job: PdfJobRequest
+    expiresAt: int
+    signature: str = Field(min_length=64, max_length=64)
+
+
 def model_to_dict(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
-

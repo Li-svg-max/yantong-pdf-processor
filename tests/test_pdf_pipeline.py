@@ -14,6 +14,7 @@ from app.cloud_client import CloudClient, CloudSettings
 from app.models import PdfJobRequest
 from app.pdf_pipeline import Marker, PipelineOptions, process_pdf
 from app.queue_store import QueueStore
+from app.request_auth import sign_ticket, verify_ticket
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -172,6 +173,28 @@ class PdfPipelineTests(unittest.TestCase):
                 "cloud://local.test/private/"
             )
         )
+
+    def test_short_lived_cloudbase_job_ticket(self) -> None:
+        job = PdfJobRequest(
+            jobId="signed-job",
+            sourceFileID="cloud://test/private/owner/imports/signed-job/source.pdf",
+            storageOwnerKey="0123456789abcdef0123456789abcdef",
+            title="签名任务",
+            subjectId="math2",
+            subjectName="数学二",
+            questionType="解答题",
+        )
+        now_ms = 2_000_000_000_000
+        expires_at = now_ms + 300_000
+        token = "test-processor-token"
+        signature = sign_ticket(job, expires_at, token)
+        self.assertEqual(
+            signature,
+            "8229bb3ad9a294ad45630239c1c2ac6219ddc0defbcb5ecd126abe9f6021bc03",
+        )
+        self.assertTrue(verify_ticket(job, expires_at, signature, token, now_ms))
+        self.assertFalse(verify_ticket(job, now_ms - 1, signature, token, now_ms))
+        self.assertFalse(verify_ticket(job, expires_at, "0" * 64, token, now_ms))
 
 
 if __name__ == "__main__":

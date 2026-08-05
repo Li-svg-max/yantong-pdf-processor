@@ -18,7 +18,7 @@
 3. 容器端口设置为 `8080`，实例数至少为 1；
 4. 建议起步配置为 2 核 CPU、4GB 内存；
 5. 挂载持久磁盘到 `/data`，否则容器重建时本地任务队列会丢失；
-6. 部署后记录 HTTPS 服务地址，例如 `https://pdf-processor.example.com`。
+6. 服务名称必须使用 `pdf-processor`，小程序通过云托管原生 `callContainer` 调用，不需要公网服务地址。
 
 容器环境变量：
 
@@ -50,19 +50,18 @@ MAX_PROCESS_ATTEMPTS=3
 
 ```text
 YANTONG_PROCESSOR_TOKEN=与容器完全相同的密钥
-YANTONG_PROCESSOR_URL=https://PDF处理服务域名
 ```
 
-重新部署 `privateMaterialApi`。PDF 上传完成后，云函数会向 `YANTONG_PROCESSOR_URL/jobs` 投递任务。容器完成处理后调用 `PRIVATE_MATERIAL_CALLBACK_URL` 分批回写，每批最多 100 个题组。
+重新部署 `privateMaterialApi`。PDF 上传完成后，云函数生成 5 分钟有效的 HMAC 签名任务票据，小程序通过 `wx.cloud.callContainer` 向 `pdf-processor/cloudbase/jobs` 投递。永久密钥不会进入小程序。容器完成处理后调用 `PRIVATE_MATERIAL_CALLBACK_URL` 分批回写，每批最多 100 个题组。
 
 在云函数配置中将 `privateMaterialApi` 的执行超时设为至少 10 秒。实际任务只在容器中运行，云函数只负责数据库写入和不超过 1.2 秒的任务投递。
 
 ## 验证
 
-健康检查：
+云托管版本的容器健康检查应显示正常。若另行配置了无需 CloudBase access token 的公网域名，也可以执行：
 
 ```powershell
-Invoke-RestMethod "https://PDF处理服务域名/health"
+Invoke-RestMethod "https://PDF处理服务公网域名/health"
 ```
 
 应返回：
@@ -78,7 +77,7 @@ Invoke-RestMethod "https://PDF处理服务域名/health"
 
 如果 `ok` 为 `false`，`missing` 会列出尚未配置的环境变量名称，但不会返回任何密钥内容。
 
-随后在小程序上传一份 PDF。处理记录应依次出现“已提交裁剪”和“可选题”。失败三次后会显示“裁剪失败”和具体原因，可点击“重试”重新投递原文件。
+公网健康地址不是原生调用的必需条件。随后在小程序上传一份 PDF，处理记录应依次出现“已提交裁剪”和“可选题”。失败三次后会显示“裁剪失败”和具体原因，可点击“重试”重新生成票据并投递原文件。
 
 ## 本地测试
 
