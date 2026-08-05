@@ -11,7 +11,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 
 from .cloud_client import CloudClient, CloudSettings
 from .models import PdfJobRequest, SignedPdfJobRequest, model_to_dict
-from .pdf_pipeline import PipelineOptions, process_pdf
 from .queue_store import QueueStore, StoredTask
 from .request_auth import verify_ticket
 
@@ -44,6 +43,8 @@ def require_processor_token(authorization: str = Header(default="")) -> None:
 
 
 def _process_task(task: StoredTask) -> None:
+    from .pdf_pipeline import PipelineOptions, process_pdf
+
     job = PdfJobRequest(**task.payload)
     workspace = DATA_DIR / "work" / job.jobId
     if workspace.exists():

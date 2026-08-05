@@ -8,10 +8,13 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from .models import PdfJobRequest
-from .pdf_pipeline import ProcessedQuestion
+
+if TYPE_CHECKING:
+    from .pdf_pipeline import ProcessedQuestion
 
 
 class CloudClientError(RuntimeError):
@@ -275,4 +278,3 @@ class CloudClient:
             "detailsLoaded": True,
             "summaryOnly": False,
         }
-
