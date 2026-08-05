@@ -14,7 +14,7 @@ from app.cloud_client import CloudClient, CloudSettings
 from app.models import PdfJobRequest
 from app.pdf_pipeline import Marker, PipelineOptions, process_pdf
 from app.queue_store import QueueStore
-from app.request_auth import sign_ticket, verify_ticket
+from app.request_auth import sign_ticket, ticket_validation_error, verify_ticket
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -195,6 +195,17 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertTrue(verify_ticket(job, expires_at, signature, token, now_ms))
         self.assertFalse(verify_ticket(job, now_ms - 1, signature, token, now_ms))
         self.assertFalse(verify_ticket(job, expires_at, "0" * 64, token, now_ms))
+        self.assertEqual(
+            ticket_validation_error(job, now_ms - 1, signature, token, now_ms),
+            "job ticket expired",
+        )
+        self.assertEqual(
+            ticket_validation_error(job, expires_at, "0" * 64, token, now_ms),
+            "job ticket signature does not match",
+        )
+        self.assertIsNone(
+            ticket_validation_error(job, expires_at, signature, f" {token} ", now_ms)
+        )
 
 
 if __name__ == "__main__":

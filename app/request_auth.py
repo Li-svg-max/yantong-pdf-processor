@@ -39,10 +39,25 @@ def verify_ticket(
     token: str,
     now_ms: int | None = None,
 ) -> bool:
+    return ticket_validation_error(job, expires_at, signature, token, now_ms) is None
+
+
+def ticket_validation_error(
+    job: PdfJobRequest,
+    expires_at: int,
+    signature: str,
+    token: str,
+    now_ms: int | None = None,
+) -> str | None:
+    token = token.strip()
     if not token:
-        return False
+        return "processor token is not configured"
     current = int(time.time() * 1000) if now_ms is None else now_ms
-    if expires_at < current or expires_at > current + MAX_FUTURE_TICKET_MS:
-        return False
+    if expires_at < current:
+        return "job ticket expired"
+    if expires_at > current + MAX_FUTURE_TICKET_MS:
+        return "job ticket timestamp is invalid"
     expected = sign_ticket(job, expires_at, token)
-    return hmac.compare_digest(signature, expected)
+    if not hmac.compare_digest(signature, expected):
+        return "job ticket signature does not match"
+    return None

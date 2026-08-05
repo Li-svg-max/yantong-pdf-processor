@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import shutil
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,7 +14,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from .cloud_client import CloudClient, CloudSettings
 from .models import PdfJobRequest, SignedPdfJobRequest, model_to_dict
 from .queue_store import QueueStore, StoredTask
-from .request_auth import verify_ticket
+from .request_auth import ticket_validation_error
 
 
 logging.basicConfig(
@@ -28,7 +30,12 @@ POLL_INTERVAL = max(0.2, float(os.getenv("QUEUE_POLL_INTERVAL", "1")))
 
 
 def _expected_token() -> str:
-    return os.getenv("YANTONG_PROCESSOR_TOKEN", "")
+    return os.getenv("YANTONG_PROCESSOR_TOKEN", "").strip()
+
+
+def _token_fingerprint() -> str:
+    token = _expected_token()
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
 
 
 def require_processor_token(authorization: str = Header(default="")) -> None:
@@ -137,6 +144,8 @@ def health() -> dict:
         "service": "yantong-pdf-processor",
         "queue": QUEUE.counts(),
         "missing": missing,
+        "tokenFingerprint": _token_fingerprint(),
+        "serverTimeMs": int(time.time() * 1000),
     }
 
 
@@ -157,13 +166,17 @@ def create_job(
 
 @app.post("/cloudbase/jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_cloudbase_job(request: SignedPdfJobRequest) -> dict:
-    if not verify_ticket(
+    validation_error = ticket_validation_error(
         request.job,
         request.expiresAt,
         request.signature,
         _expected_token(),
-    ):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid job ticket")
+    )
+    if validation_error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=validation_error,
+        )
     created = QUEUE.enqueue(request.job.jobId, model_to_dict(request.job))
     current = QUEUE.status(request.job.jobId)
     return {

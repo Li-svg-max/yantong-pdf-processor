@@ -38,7 +38,7 @@ class CloudSettings:
     def from_environment(cls) -> "CloudSettings":
         local_mode = os.getenv("LOCAL_PROCESSOR_MODE", "").lower() in {"1", "true", "yes"}
         return cls(
-            processor_token=os.getenv("YANTONG_PROCESSOR_TOKEN", ""),
+            processor_token=os.getenv("YANTONG_PROCESSOR_TOKEN", "").strip(),
             callback_url=os.getenv("PRIVATE_MATERIAL_CALLBACK_URL", ""),
             cos_bucket=os.getenv("COS_BUCKET", ""),
             cos_region=os.getenv("COS_REGION", ""),
