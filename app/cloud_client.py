@@ -39,13 +39,13 @@ class CloudSettings:
         local_mode = os.getenv("LOCAL_PROCESSOR_MODE", "").lower() in {"1", "true", "yes"}
         return cls(
             processor_token=os.getenv("YANTONG_PROCESSOR_TOKEN", "").strip(),
-            callback_url=os.getenv("PRIVATE_MATERIAL_CALLBACK_URL", ""),
-            cos_bucket=os.getenv("COS_BUCKET", ""),
-            cos_region=os.getenv("COS_REGION", ""),
-            cloud_file_host=os.getenv("CLOUD_FILE_HOST", ""),
-            secret_id=os.getenv("TENCENT_SECRET_ID", ""),
-            secret_key=os.getenv("TENCENT_SECRET_KEY", ""),
-            session_token=os.getenv("TENCENT_SESSION_TOKEN", ""),
+            callback_url=os.getenv("PRIVATE_MATERIAL_CALLBACK_URL", "").strip(),
+            cos_bucket=os.getenv("COS_BUCKET", "").strip(),
+            cos_region=os.getenv("COS_REGION", "").strip(),
+            cloud_file_host=os.getenv("CLOUD_FILE_HOST", "").strip(),
+            secret_id=os.getenv("TENCENT_SECRET_ID", "").strip(),
+            secret_key=os.getenv("TENCENT_SECRET_KEY", "").strip(),
+            session_token=os.getenv("TENCENT_SESSION_TOKEN", "").strip(),
             local_mode=local_mode,
             local_storage_dir=Path(os.getenv("LOCAL_STORAGE_DIR", "./data/local-cloud")),
         )
@@ -56,6 +56,11 @@ def _cloud_file_parts(file_id: str) -> tuple[str, str]:
     if parsed.scheme != "cloud" or not parsed.netloc or not parsed.path:
         raise CloudClientError("无效的云存储 fileID")
     return parsed.netloc, parsed.path.lstrip("/")
+
+
+def _bucket_for_cloud_host(cloud_host: str, configured_bucket: str) -> str:
+    _, separator, embedded_bucket = cloud_host.partition(".")
+    return embedded_bucket if separator and embedded_bucket else configured_bucket
 
 
 class CloudClient:
@@ -101,8 +106,9 @@ class CloudClient:
                 raise CloudClientError(f"本地 PDF 不存在: {source}")
             shutil.copy2(source, destination)
             return
-        _, key = _cloud_file_parts(job.sourceFileID)
-        response = self._cos().get_object(Bucket=self.settings.cos_bucket, Key=key)
+        source_host, key = _cloud_file_parts(job.sourceFileID)
+        bucket = _bucket_for_cloud_host(source_host, self.settings.cos_bucket)
+        response = self._cos().get_object(Bucket=bucket, Key=key)
         response["Body"].get_stream_to_file(str(destination))
 
     def upload_question_assets(
@@ -111,8 +117,10 @@ class CloudClient:
         questions: list[ProcessedQuestion],
     ) -> list[list[dict]]:
         source_host = ""
+        bucket = self.settings.cos_bucket
         if not self.settings.local_mode:
             source_host, _ = _cloud_file_parts(job.sourceFileID)
+            bucket = _bucket_for_cloud_host(source_host, self.settings.cos_bucket)
         cloud_host = self.settings.cloud_file_host or source_host or "local.test"
         uploaded: list[list[dict]] = []
         for question_index, question in enumerate(questions, start=1):
@@ -129,7 +137,7 @@ class CloudClient:
                     shutil.copy2(image_path, target)
                 else:
                     self._cos().upload_file(
-                        Bucket=self.settings.cos_bucket,
+                        Bucket=bucket,
                         LocalFilePath=str(image_path),
                         Key=key,
                         PartSize=10,

@@ -146,6 +146,11 @@ def health() -> dict:
         "missing": missing,
         "tokenFingerprint": _token_fingerprint(),
         "serverTimeMs": int(time.time() * 1000),
+        "storage": {
+            "configuredBucket": settings.cos_bucket,
+            "region": settings.cos_region,
+            "fileIdBucketResolution": "embedded-host-first",
+        },
     }
 
 

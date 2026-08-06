@@ -10,7 +10,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
-from app.cloud_client import CloudClient, CloudSettings
+from app.cloud_client import CloudClient, CloudSettings, _bucket_for_cloud_host
 from app.models import PdfJobRequest
 from app.pdf_pipeline import Marker, PipelineOptions, process_pdf
 from app.queue_store import QueueStore
@@ -205,6 +205,22 @@ class PdfPipelineTests(unittest.TestCase):
         )
         self.assertIsNone(
             ticket_validation_error(job, expires_at, signature, f" {token} ", now_ms)
+        )
+
+    def test_cloud_file_host_resolves_embedded_cos_bucket(self) -> None:
+        self.assertEqual(
+            _bucket_for_cloud_host(
+                "cloud1-example.636c-cloud1-example-1462091206",
+                "configured-fallback-1462091206",
+            ),
+            "636c-cloud1-example-1462091206",
+        )
+        self.assertEqual(
+            _bucket_for_cloud_host(
+                "cloud1-example",
+                "configured-fallback-1462091206",
+            ),
+            "configured-fallback-1462091206",
         )
 
 
