@@ -49,6 +49,17 @@ def build_scan_pdf(path: Path) -> None:
     document.save()
 
 
+def build_colored_box_scan_pdf(path: Path) -> None:
+    page = Image.new("RGB", (1200, 1600), "white")
+    draw = ImageDraw.Draw(page)
+    for top in (170, 520, 870):
+        draw.rectangle((80, top, 185, top + 64), fill=(250, 145, 160))
+        draw.line((220, top + 32, 1080, top + 32), fill="black", width=2)
+    document = canvas.Canvas(str(path), pagesize=A4)
+    document.drawImage(ImageReader(page), 0, 0, width=A4[0], height=A4[1])
+    document.save()
+
+
 def build_contact_sheet(paths: list[Path], destination: Path) -> None:
     images = [Image.open(path).convert("RGB") for path in paths]
     target_width = 900
@@ -118,6 +129,14 @@ class PdfPipelineTests(unittest.TestCase):
             [path for question in questions for path in question.image_paths],
             WORK / "scan-crops-contact-sheet.jpg",
         )
+
+    def test_colored_question_box_fallback(self) -> None:
+        source = WORK / "colored-box-source.pdf"
+        output = WORK / "colored-box-output"
+        build_colored_box_scan_pdf(source)
+        questions = process_pdf(source, output, PipelineOptions(dpi=180))
+        self.assertEqual([item.number_label for item in questions], ["1", "2", "3"])
+        self.assertTrue(all(item.detection_source == "colored_question_box" for item in questions))
 
     def test_queue_and_local_cloud_callback(self) -> None:
         text_source = WORK / "text-source.pdf"

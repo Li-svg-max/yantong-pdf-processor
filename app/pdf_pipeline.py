@@ -169,6 +169,64 @@ class RapidOcrMarkerDetector:
         return _deduplicate_markers(markers)
 
 
+def _contiguous_ranges(values: Sequence[int], max_gap: int = 1) -> list[tuple[int, int]]:
+    if len(values) == 0:
+        return []
+    ranges: list[tuple[int, int]] = []
+    start = previous = int(values[0])
+    for value in values[1:]:
+        value = int(value)
+        if value > previous + max_gap:
+            ranges.append((start, previous))
+            start = value
+        previous = value
+    ranges.append((start, previous))
+    return ranges
+
+
+def detect_colored_question_boxes(
+    page_image: Image.Image,
+    page_index: int,
+    first_number: int,
+) -> list[Marker]:
+    """Detect the pink numbered labels used by the 660 scanned workbook."""
+    rgb = np.asarray(page_image.convert("RGB"))
+    height, width = rgb.shape[:2]
+    red = rgb[:, :, 0].astype(np.int16)
+    green = rgb[:, :, 1].astype(np.int16)
+    blue = rgb[:, :, 2].astype(np.int16)
+    mask = (red >= 180) & ((red - green) >= 25) & ((red - blue) >= 10)
+    mask[:, round(width * 0.35) :] = False
+
+    row_threshold = max(8, round(width * 0.006))
+    rows = np.flatnonzero(mask.sum(axis=1) >= row_threshold)
+    markers: list[Marker] = []
+    for offset, (top, bottom) in enumerate(_contiguous_ranges(rows, max_gap=2)):
+        region = mask[top : bottom + 1]
+        column_threshold = max(4, round((bottom - top + 1) * 0.15))
+        columns = np.flatnonzero(region.sum(axis=0) >= column_threshold)
+        if not columns.size:
+            continue
+        left, right = int(columns[0]), int(columns[-1])
+        box_width = right - left + 1
+        box_height = bottom - top + 1
+        if not (width * 0.025 <= box_width <= width * 0.15):
+            continue
+        if not (height * 0.01 <= box_height <= height * 0.08):
+            continue
+        number = str(first_number + len(markers))
+        markers.append(
+            Marker(
+                page_index=page_index,
+                y_ratio=max(0.0, min(1.0, top / float(height))),
+                number_label=number,
+                summary=f"扫描版第 {number} 题",
+                source="colored_question_box",
+            )
+        )
+    return markers
+
+
 def _render_page(document: pdfium.PdfDocument, page_index: int, dpi: int) -> Image.Image:
     scale = dpi / 72.0
     return document[page_index].render(scale=scale).to_pil().convert("RGB")
@@ -241,11 +299,34 @@ def _detect_markers(
     text_markers = detect_text_markers(pdf_path)
     if text_markers:
         return text_markers
-    detector = ocr_detector or RapidOcrMarkerDetector()
+    try:
+        detector = ocr_detector or RapidOcrMarkerDetector()
+    except PdfProcessingError:
+        detector = None
     markers: list[Marker] = []
+    if detector:
+        for page_index in range(len(document)):
+            try:
+                markers.extend(
+                    detector(_render_page(document, page_index, options.dpi), page_index)
+                )
+            except Exception:
+                continue
+    markers = _deduplicate_markers(markers)
+    if markers:
+        return markers
+
+    colored_markers: list[Marker] = []
+    next_number = 1
     for page_index in range(len(document)):
-        markers.extend(detector(_render_page(document, page_index, options.dpi), page_index))
-    return _deduplicate_markers(markers)
+        page_markers = detect_colored_question_boxes(
+            _render_page(document, page_index, options.dpi),
+            page_index,
+            next_number,
+        )
+        colored_markers.extend(page_markers)
+        next_number += len(page_markers)
+    return colored_markers
 
 
 def process_pdf(
