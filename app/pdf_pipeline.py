@@ -133,9 +133,9 @@ class RapidOcrMarkerDetector:
     def __init__(self) -> None:
         try:
             from rapidocr_onnxruntime import RapidOCR
-        except ImportError as error:
+        except Exception as error:
             raise PdfProcessingError(
-                "扫描版 PDF 需要安装 rapidocr-onnxruntime"
+                f"扫描版 PDF OCR 导入失败: {type(error).__name__}: {error}"
             ) from error
         self._engine = RapidOCR()
 
