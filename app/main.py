@@ -122,6 +122,12 @@ app = FastAPI(
 )
 
 
+@app.get("/__tcb_probe__")
+def cloudbase_probe() -> dict:
+    """Return immediately for CloudBase's container readiness probe."""
+    return {"ok": True}
+
+
 @app.get("/health")
 def health() -> dict:
     settings = CloudSettings.from_environment()
