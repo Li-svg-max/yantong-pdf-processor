@@ -8,7 +8,7 @@ from typing import Callable, Iterable, Sequence
 import numpy as np
 import pdfplumber
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 QUESTION_PREFIX = re.compile(
@@ -140,33 +140,40 @@ class RapidOcrMarkerDetector:
         self._engine = RapidOCR()
 
     def __call__(self, page_image: Image.Image, page_index: int) -> list[Marker]:
-        scan_width = max(1, round(page_image.width * 0.48))
+        scan_width = max(1, round(page_image.width * 0.68))
         scan_image = page_image.crop((0, 0, scan_width, page_image.height)).convert("RGB")
-        result, _ = self._engine(np.asarray(scan_image))
-        markers: list[Marker] = []
-        for row in result or []:
-            if not row or len(row) < 3:
-                continue
-            box, value, confidence = row
-            if float(confidence) < 0.48:
-                continue
-            recognized = re.sub(r"\s+", " ", str(value)).strip()
-            match = QUESTION_PREFIX.match(recognized)
-            if not match:
-                continue
-            points = np.asarray(box, dtype=float)
-            y = float(points[:, 1].min())
-            number_label = match.group(1)
-            markers.append(
-                Marker(
-                    page_index=page_index,
-                    y_ratio=max(0.0, min(1.0, y / page_image.height)),
-                    number_label=number_label,
-                    summary=_clean_summary(recognized, number_label),
-                    source="rapidocr_number",
+        gray = ImageOps.autocontrast(ImageOps.grayscale(scan_image))
+        binary = gray.point(lambda value: 255 if value >= 185 else 0)
+        variants = (scan_image, gray.convert("RGB"), binary.convert("RGB"))
+        for variant in variants:
+            result, _ = self._engine(np.asarray(variant))
+            markers: list[Marker] = []
+            for row in result or []:
+                if not row or len(row) < 3:
+                    continue
+                box, value, confidence = row
+                if float(confidence) < 0.40:
+                    continue
+                recognized = re.sub(r"\s+", " ", str(value)).strip()
+                match = QUESTION_PREFIX.match(recognized)
+                if not match:
+                    continue
+                points = np.asarray(box, dtype=float)
+                y = float(points[:, 1].min())
+                number_label = match.group(1)
+                markers.append(
+                    Marker(
+                        page_index=page_index,
+                        y_ratio=max(0.0, min(1.0, y / page_image.height)),
+                        number_label=number_label,
+                        summary=_clean_summary(recognized, number_label),
+                        source="rapidocr_number",
+                    )
                 )
-            )
-        return _deduplicate_markers(markers)
+            markers = _deduplicate_markers(markers)
+            if markers:
+                return markers
+        return []
 
 
 def _contiguous_ranges(values: Sequence[int], max_gap: int = 1) -> list[tuple[int, int]]:
