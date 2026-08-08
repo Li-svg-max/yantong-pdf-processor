@@ -227,6 +227,12 @@ class CloudClient:
         group_id = f"private-{job.jobId}-{index + 1:04d}"
         question_id = f"{group_id}-q1"
         summary = question.summary or f"第 {question.number_label} 题"
+        recognized_text = question.recognized_text.strip() or summary
+        machine_text = question.text_source not in {"pdf_text_index", "number_summary"}
+        text_requires_review = machine_text and question.text_confidence < 0.88
+        requires_visual_review = bool(
+            question.image_quality.get("requiresVisualReview") or text_requires_review
+        )
         return {
             "id": group_id,
             "paper": job.title,
@@ -238,11 +244,11 @@ class CloudClient:
             "type": job.questionType,
             "difficulty": "未标注",
             "title": f"第 {question.number_label} 题",
-            "stem": summary,
-            "overviewText": summary,
+            "stem": recognized_text,
+            "overviewText": recognized_text,
             "overviewContent": {
                 "format": "text",
-                "plainText": summary,
+                "plainText": recognized_text,
                 "latexText": "",
             },
             "material": {
@@ -259,8 +265,12 @@ class CloudClient:
                     "number": question.number_label,
                     "subjectId": job.subjectId,
                     "subjectName": job.subjectName,
-                    "stem": summary,
-                    "content": {"format": "text", "plainText": summary, "latexText": ""},
+                    "stem": recognized_text,
+                    "content": {
+                        "format": "text",
+                        "plainText": recognized_text,
+                        "latexText": "",
+                    },
                     "options": [],
                     "answer": "",
                     "analysis": "",
@@ -274,11 +284,17 @@ class CloudClient:
             "sourceFormat": "user_pdf_crop",
             "selectionMode": "number_summary",
             "textReviewStatus": (
-                "pdf_text_index"
-                if question.detection_source == "text_layer"
-                else "machine_number_index"
+                "machine_ocr_needs_review"
+                if text_requires_review
+                else "machine_ocr"
+                if machine_text
+                else question.text_source
             ),
+            "recognizedTextSource": question.text_source,
+            "recognizedTextConfidence": round(question.text_confidence, 4),
             "detectionSource": question.detection_source,
+            "imageQuality": question.image_quality,
+            "requiresVisualReview": requires_visual_review,
             "sourcePages": list(question.source_pages),
             "status": "未掌握",
             "reviewStatus": "private",

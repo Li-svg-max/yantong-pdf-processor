@@ -36,9 +36,13 @@ class Marker:
 class ProcessedQuestion:
     number_label: str
     summary: str
+    recognized_text: str
+    text_source: str
+    text_confidence: float
     image_paths: tuple[Path, ...]
     source_pages: tuple[int, ...]
     detection_source: str
+    image_quality: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -175,6 +179,71 @@ class RapidOcrMarkerDetector:
                 return markers
         return []
 
+    def extract_text(self, question_image: Image.Image) -> dict[str, object]:
+        """Recognize a crop while retaining its image as the source of truth."""
+        image = question_image.convert("RGB")
+        if image.width > 2600:
+            height = max(1, round(image.height * 2600 / image.width))
+            image = image.resize((2600, height), Image.Resampling.LANCZOS)
+        pixels = np.asarray(image, dtype=np.int16)
+        red, green, blue = pixels[:, :, 0], pixels[:, :, 1], pixels[:, :, 2]
+        blue_green_ink = (
+            (pixels.max(axis=2) - pixels.min(axis=2) >= 40)
+            & (pixels.min(axis=2) <= 225)
+            & (((blue - red) >= 28) | ((green - red) >= 34))
+        )
+        suppressed_pixels = np.asarray(image).copy()
+        suppressed_pixels[blue_green_ink] = 255
+        variants = (
+            (image, "rapidocr_full_text"),
+            (
+                ImageOps.autocontrast(ImageOps.grayscale(image)).convert("RGB"),
+                "rapidocr_full_text_grayscale",
+            ),
+            (Image.fromarray(suppressed_pixels), "rapidocr_annotation_suppressed"),
+        )
+        candidates: list[dict[str, object]] = []
+        for variant, source in variants:
+            result, _ = self._engine(np.asarray(variant))
+            rows: list[tuple[float, float, str, float]] = []
+            for row in result or []:
+                if not row or len(row) < 3:
+                    continue
+                box, value, confidence = row
+                confidence = float(confidence)
+                recognized = re.sub(r"\s+", " ", str(value or "")).strip()
+                if confidence < 0.25 or not recognized:
+                    continue
+                points = np.asarray(box, dtype=float)
+                rows.append(
+                    (
+                        float(points[:, 1].min()),
+                        float(points[:, 0].min()),
+                        recognized,
+                        confidence,
+                    )
+                )
+            rows.sort(key=lambda item: (round(item[0] / 12), item[1]))
+            if rows:
+                candidates.append(
+                    {
+                        "text": "\n".join(item[2] for item in rows).strip()[:12000],
+                        "confidence": sum(item[3] for item in rows) / len(rows),
+                        "source": source,
+                    }
+                )
+        if not candidates:
+            return {"text": "", "confidence": 0.0, "source": "rapidocr_full_text"}
+        best = max(
+            candidates,
+            key=lambda item: (len(str(item["text"])), float(item["confidence"])),
+        )
+        return {
+            "text": str(best["text"]),
+            "confidence": round(float(best["confidence"]), 4),
+            "source": str(best["source"]),
+        }
+
 
 def _contiguous_ranges(values: Sequence[int], max_gap: int = 1) -> list[tuple[int, int]]:
     if len(values) == 0:
@@ -292,6 +361,50 @@ def _split_tall_image(image: Image.Image, max_height: int) -> list[Image.Image]:
     return parts
 
 
+def analyze_image_quality(image: Image.Image) -> dict[str, object]:
+    """Flag likely annotation/scan issues without altering the source crop."""
+    sample = image.copy()
+    sample.thumbnail((1200, 1600), Image.Resampling.LANCZOS)
+    rgb = np.asarray(sample.convert("RGB"), dtype=np.int16)
+    gray = np.asarray(sample.convert("L"), dtype=np.int16)
+    red, green, blue = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
+    chroma = rgb.max(axis=2) - rgb.min(axis=2)
+    colored = (chroma >= 45) & (rgb.min(axis=2) <= 220)
+    blue_green_ink = colored & (((blue - red) >= 35) | ((green - red) >= 40))
+    red_ink = colored & ((red - green) >= 45) & ((red - blue) >= 25)
+    colored_ratio = float(colored.mean())
+    blue_green_ratio = float(blue_green_ink.mean())
+    red_ratio = float(red_ink.mean())
+    dark_ratio = float((gray < 210).mean())
+    horizontal_gradient = np.abs(np.diff(gray, axis=1)) if gray.shape[1] > 1 else np.zeros((1, 1))
+    vertical_gradient = np.abs(np.diff(gray, axis=0)) if gray.shape[0] > 1 else np.zeros((1, 1))
+    sharpness = float((horizontal_gradient.mean() + vertical_gradient.mean()) / 2)
+
+    annotation_risk = "low"
+    # Blue/green marks are rarely part of monochrome exercise text. Red remains
+    # medium risk because some workbooks use printed red question markers.
+    if blue_green_ratio >= 0.0015 or red_ratio >= 0.012:
+        annotation_risk = "high"
+    elif blue_green_ratio >= 0.0003 or red_ratio >= 0.003 or colored_ratio >= 0.02:
+        annotation_risk = "medium"
+    scan_quality = "good"
+    if sharpness < 2.2 or dark_ratio < 0.002:
+        scan_quality = "poor"
+    elif sharpness < 3.5:
+        scan_quality = "fair"
+    return {
+        "annotationRisk": annotation_risk,
+        "scanQuality": scan_quality,
+        "coloredInkRatio": round(colored_ratio, 6),
+        "blueGreenInkRatio": round(blue_green_ratio, 6),
+        "redInkRatio": round(red_ratio, 6),
+        "darkPixelRatio": round(dark_ratio, 6),
+        "sharpnessScore": round(sharpness, 3),
+        "originalPreserved": True,
+        "requiresVisualReview": annotation_risk != "low" or scan_quality != "good",
+    }
+
+
 def _safe_number(value: str, fallback: int) -> str:
     normalized = re.sub(r"[^0-9A-Za-z_-]+", "-", value).strip("-")
     return normalized or str(fallback)
@@ -302,8 +415,9 @@ def _detect_markers(
     document: pdfium.PdfDocument,
     options: PipelineOptions,
     ocr_detector: Callable[[Image.Image, int], list[Marker]] | None,
+    text_markers: list[Marker] | None = None,
 ) -> list[Marker]:
-    text_markers = detect_text_markers(pdf_path)
+    text_markers = detect_text_markers(pdf_path) if text_markers is None else text_markers
     if text_markers:
         return text_markers
     try:
@@ -341,6 +455,7 @@ def process_pdf(
     output_dir: Path,
     options: PipelineOptions | None = None,
     ocr_detector: Callable[[Image.Image, int], list[Marker]] | None = None,
+    ocr_text_extractor: Callable[[Image.Image], dict[str, object]] | None = None,
 ) -> list[ProcessedQuestion]:
     options = options or PipelineOptions()
     pdf_path = Path(pdf_path)
@@ -352,7 +467,20 @@ def process_pdf(
     document = pdfium.PdfDocument(str(pdf_path))
     if len(document) < 1:
         raise PdfProcessingError("PDF 没有可处理页面")
-    markers = _detect_markers(pdf_path, document, options, ocr_detector)
+    text_markers = detect_text_markers(pdf_path)
+    resolved_ocr_detector = ocr_detector
+    if not text_markers and resolved_ocr_detector is None:
+        try:
+            resolved_ocr_detector = RapidOcrMarkerDetector()
+        except PdfProcessingError:
+            resolved_ocr_detector = None
+    markers = _detect_markers(
+        pdf_path,
+        document,
+        options,
+        resolved_ocr_detector,
+        text_markers=text_markers,
+    )
     if not markers:
         raise PdfProcessingError("没有检测到题号，请确认 PDF 页面中包含清晰题号")
     if len(markers) > options.max_questions:
@@ -398,6 +526,30 @@ def process_pdf(
             raise PdfProcessingError(f"第 {marker.number_label} 题裁剪结果为空")
 
         stitched = _stitch_vertical(pieces)
+        image_quality = analyze_image_quality(stitched)
+        recognized_text = marker.summary
+        text_source = "pdf_text_index" if marker.source == "text_layer" else "number_summary"
+        text_confidence = 1.0 if marker.source == "text_layer" else 0.0
+        extractor = ocr_text_extractor
+        if extractor is None and hasattr(resolved_ocr_detector, "extract_text"):
+            extractor = getattr(resolved_ocr_detector, "extract_text")
+        if marker.source != "text_layer" and extractor:
+            try:
+                text_result = extractor(stitched) or {}
+                candidate_text = re.sub(
+                    r"[ \t]+", " ", str(text_result.get("text") or "")
+                ).strip()
+                if len(candidate_text) >= 2:
+                    recognized_text = candidate_text[:12000]
+                    text_source = str(text_result.get("source") or "machine_ocr")[:40]
+                    text_confidence = max(
+                        0.0,
+                        min(1.0, float(text_result.get("confidence") or 0.0)),
+                    )
+            except Exception:
+                # The OCR layer is editable convenience text. Its failure must
+                # not discard the authoritative crop or fail the import job.
+                pass
         image_parts = _split_tall_image(stitched, options.max_output_height)
         safe_number = _safe_number(marker.number_label, marker_index + 1)
         paths: list[Path] = []
@@ -417,9 +569,13 @@ def process_pdf(
             ProcessedQuestion(
                 number_label=marker.number_label,
                 summary=marker.summary,
+                recognized_text=recognized_text,
+                text_source=text_source,
+                text_confidence=text_confidence,
                 image_paths=tuple(paths),
                 source_pages=tuple(source_pages),
                 detection_source=marker.source,
+                image_quality=image_quality,
             )
         )
     return results

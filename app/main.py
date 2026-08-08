@@ -12,6 +12,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 
 from .cloud_client import CloudClient, CloudSettings
+from .document_export.models import ExportRequest
+from .document_export.renderer import render_export
 from .models import PdfJobRequest, SignedPdfJobRequest, model_to_dict
 from .queue_store import QueueStore, StoredTask
 from .request_auth import ticket_validation_error
@@ -27,6 +29,7 @@ DATA_DIR = Path(os.getenv("PROCESSOR_DATA_DIR", "/data"))
 QUEUE = QueueStore(DATA_DIR / "queue.sqlite3")
 MAX_ATTEMPTS = max(1, min(10, int(os.getenv("MAX_PROCESS_ATTEMPTS", "3"))))
 POLL_INTERVAL = max(0.2, float(os.getenv("QUEUE_POLL_INTERVAL", "1")))
+EXPORT_LOCK = asyncio.Lock()
 
 
 def _expected_token() -> str:
@@ -148,6 +151,7 @@ def health() -> dict:
     return {
         "ok": not missing,
         "service": "yantong-pdf-processor",
+        "documentExportFormats": ["pdf", "docx"],
         "queue": QUEUE.counts(),
         "missing": missing,
         "tokenFingerprint": _token_fingerprint(),
@@ -158,6 +162,25 @@ def health() -> dict:
             "fileIdBucketResolution": "embedded-host-first",
         },
     }
+
+
+@app.post("/export")
+async def export_document(request: ExportRequest) -> dict:
+    async with EXPORT_LOCK:
+        try:
+            files = await asyncio.to_thread(render_export, request)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(error),
+            ) from error
+        except Exception as error:
+            LOGGER.exception("document export failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="文档生成服务暂时不可用",
+            ) from error
+    return {"success": True, "data": {"files": files}}
 
 
 @app.post("/jobs", status_code=status.HTTP_202_ACCEPTED)

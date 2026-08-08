@@ -12,7 +12,13 @@ from reportlab.pdfgen import canvas
 
 from app.cloud_client import CloudClient, CloudSettings, _bucket_for_cloud_host
 from app.models import PdfJobRequest
-from app.pdf_pipeline import Marker, PipelineOptions, process_pdf
+from app.pdf_pipeline import (
+    Marker,
+    PipelineOptions,
+    RapidOcrMarkerDetector,
+    analyze_image_quality,
+    process_pdf,
+)
 from app.queue_store import QueueStore
 from app.request_auth import sign_ticket, ticket_validation_error, verify_ticket
 
@@ -100,6 +106,7 @@ class PdfPipelineTests(unittest.TestCase):
                 with Image.open(path) as image:
                     widths.add(image.width)
         self.assertEqual(len(widths), 1, "question crops must retain one fixed page width")
+        self.assertTrue(all(item.image_quality["originalPreserved"] for item in questions))
         build_contact_sheet(
             [path for question in questions for path in question.image_paths],
             WORK / "text-crops-contact-sheet.jpg",
@@ -122,9 +129,17 @@ class PdfPipelineTests(unittest.TestCase):
             output,
             PipelineOptions(dpi=180),
             ocr_detector=fake_ocr,
+            ocr_text_extractor=lambda _: {
+                "text": "1. scanned question content with x^2",
+                "confidence": 0.91,
+                "source": "test_full_text_ocr",
+            },
         )
         self.assertEqual(len(questions), 2)
         self.assertTrue(all(item.detection_source == "test_ocr" for item in questions))
+        self.assertTrue(all("x^2" in item.recognized_text for item in questions))
+        self.assertTrue(all(item.text_source == "test_full_text_ocr" for item in questions))
+        self.assertTrue(all(item.text_confidence == 0.91 for item in questions))
         build_contact_sheet(
             [path for question in questions for path in question.image_paths],
             WORK / "scan-crops-contact-sheet.jpg",
@@ -137,6 +152,52 @@ class PdfPipelineTests(unittest.TestCase):
         questions = process_pdf(source, output, PipelineOptions(dpi=180))
         self.assertEqual([item.number_label for item in questions], ["1", "2", "3"])
         self.assertTrue(all(item.detection_source == "colored_question_box" for item in questions))
+
+    def test_annotation_risk_preserves_original_crop(self) -> None:
+        clean = Image.new("RGB", (1200, 800), "white")
+        draw = ImageDraw.Draw(clean)
+        for y in range(60, 760, 45):
+            draw.line((40, y, 1160, y), fill="black", width=3)
+        original_size = clean.size
+        clean_quality = analyze_image_quality(clean)
+        self.assertEqual(clean.size, original_size)
+        self.assertEqual(clean_quality["annotationRisk"], "low")
+        self.assertTrue(clean_quality["originalPreserved"])
+
+        annotated = clean.copy()
+        annotated_draw = ImageDraw.Draw(annotated)
+        for offset in range(5):
+            annotated_draw.line(
+                (100, 100 + offset * 80, 1000, 180 + offset * 80),
+                fill=(20, 80, 220),
+                width=14,
+            )
+        annotated_size = annotated.size
+        annotated_quality = analyze_image_quality(annotated)
+        self.assertEqual(annotated.size, annotated_size)
+        self.assertEqual(annotated_quality["annotationRisk"], "high")
+        self.assertTrue(annotated_quality["requiresVisualReview"])
+
+    def test_full_text_ocr_tries_colored_annotation_suppression(self) -> None:
+        class FakeEngine:
+            def __call__(self, pixels):
+                sample = pixels[8, 8]
+                if int(sample[0]) == 255 and int(sample[1]) == 255 and int(sample[2]) == 255:
+                    value, confidence = "clean printed question text", 0.94
+                elif int(sample[0]) == int(sample[1]) == int(sample[2]):
+                    value, confidence = "gray text", 0.70
+                else:
+                    value, confidence = "bad", 0.45
+                return [[[[0, 0], [100, 0], [100, 20], [0, 20]], value, confidence]], None
+
+        image = Image.new("RGB", (180, 80), "white")
+        ImageDraw.Draw(image).rectangle((0, 0, 20, 20), fill=(20, 80, 230))
+        detector = RapidOcrMarkerDetector.__new__(RapidOcrMarkerDetector)
+        detector._engine = FakeEngine()
+        result = detector.extract_text(image)
+        self.assertEqual(result["source"], "rapidocr_annotation_suppressed")
+        self.assertEqual(result["text"], "clean printed question text")
+        self.assertGreater(result["confidence"], 0.9)
 
     def test_queue_and_local_cloud_callback(self) -> None:
         text_source = WORK / "text-source.pdf"
