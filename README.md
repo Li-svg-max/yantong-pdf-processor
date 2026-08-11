@@ -26,6 +26,8 @@
 
 发布完成后，`GET /health` 应返回 `ok: true`、`modelLoaded: true` 和 `service: yantong-formula-ocr`。若 `modelLoaded` 不是 `true`，不要开始图片识别测试。
 
+构建日志中不应出现 `nvidia-cuda-*`、`nvidia-cudnn-*` 或 `nvidia-nccl-*`。这些依赖表示 pip 错误安装了 GPU 版 PyTorch，会把镜像膨胀到约 10GB 并导致 CloudBase 推送超时。当前 Dockerfile 通过 `constraints.txt` 固定 CPU 轮子；正常镜像不应包含 CUDA 运行库。
+
 部署前必须分别核对 Pix2Text 代码、检测模型、公式识别模型及底层 OCR 组件的许可证和商用条件。模型输出、用户确认结果和原图应分开保存；当前版本不持久化公式图片。
 
 本地测试（不加载模型）：

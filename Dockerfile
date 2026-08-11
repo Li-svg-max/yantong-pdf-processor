@@ -10,8 +10,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt constraints.txt ./
+RUN pip install --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cpu \
+      -c constraints.txt \
+      torch torchvision \
+    && pip install --no-cache-dir \
+      --extra-index-url https://download.pytorch.org/whl/cpu \
+      -c constraints.txt \
+      -r requirements.txt
 COPY app ./app
 
 RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
