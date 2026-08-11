@@ -6,19 +6,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FORMULA_OCR_DEVICE=cpu
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends curl libgomp1 libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY requirements.txt constraints.txt ./
-RUN pip install --no-cache-dir \
-      --index-url https://download.pytorch.org/whl/cpu \
-      -c constraints.txt \
-      torch torchvision \
-    && pip install --no-cache-dir \
-      --extra-index-url https://download.pytorch.org/whl/cpu \
-      -c constraints.txt \
-      -r requirements.txt
+RUN curl --fail --location --retry 5 --retry-all-errors --progress-bar \
+      -o /tmp/torch.whl \
+      "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
+    && curl --fail --location --retry 5 --retry-all-errors --progress-bar \
+      -o /tmp/torchvision.whl \
+      "https://download.pytorch.org/whl/cpu/torchvision-0.22.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
+    && pip install --no-cache-dir --no-deps /tmp/torch.whl /tmp/torchvision.whl \
+    && rm -f /tmp/torch.whl /tmp/torchvision.whl \
+    && pip install --no-cache-dir -c constraints.txt -r requirements.txt
 COPY app ./app
 
 RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
