@@ -30,6 +30,16 @@ class FormulaEngineTests(unittest.TestCase):
         self.assertTrue(engine.load_started.wait(timeout=0.5))
         engine.allow_load_to_finish.set()
 
+    def test_preload_is_idempotent_while_loading(self) -> None:
+        engine = StubFormulaEngine()
+
+        engine.preload()
+        self.assertTrue(engine.load_started.wait(timeout=0.5))
+        engine.preload()
+
+        self.assertTrue(engine.loading)
+        engine.allow_load_to_finish.set()
+
 
 if __name__ == "__main__":
     unittest.main()

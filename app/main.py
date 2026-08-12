@@ -56,6 +56,17 @@ def health() -> dict:
     }
 
 
+@app.post("/warmup", status_code=status.HTTP_202_ACCEPTED)
+def warmup() -> dict:
+    ENGINE.preload()
+    return {
+        "accepted": True,
+        "modelLoaded": ENGINE.loaded,
+        "modelLoading": ENGINE.loading,
+        "modelError": ENGINE.load_error,
+    }
+
+
 @app.post("/recognize")
 async def recognize(request: RecognizeRequest) -> dict:
     if not request.mimeType.startswith("image/"):
