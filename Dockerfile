@@ -12,13 +12,15 @@ RUN apt-get update \
 WORKDIR /app
 COPY requirements.txt constraints.txt ./
 RUN curl --fail --location --retry 5 --retry-all-errors --progress-bar \
-      -o /tmp/torch.whl \
+      -o "/tmp/torch-2.7.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
       "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
     && curl --fail --location --retry 5 --retry-all-errors --progress-bar \
-      -o /tmp/torchvision.whl \
+      -o "/tmp/torchvision-0.22.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
       "https://download.pytorch.org/whl/cpu/torchvision-0.22.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
-    && pip install --no-cache-dir --no-deps /tmp/torch.whl /tmp/torchvision.whl \
-    && rm -f /tmp/torch.whl /tmp/torchvision.whl \
+    && pip install --no-cache-dir \
+      "/tmp/torch-2.7.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
+      "/tmp/torchvision-0.22.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
+    && rm -f /tmp/torch-*.whl /tmp/torchvision-*.whl \
     && pip install --no-cache-dir -c constraints.txt -r requirements.txt
 COPY app ./app
 
