@@ -24,14 +24,14 @@
 {
   "ok": true,
   "service": "yantong-formula-ocr",
-  "release": "formula-only-onnx-v1",
+  "release": "formula-only-onnx-v2",
   "modelLoaded": false,
   "modelLoading": false,
   "modelError": ""
 }
 ```
 
-服务创建与健康检查不加载模型。只有调用 `POST /warmup` 或首次调用 `POST /recognize` 时才会下载并加载公式模型，因此第一次预热需要较长时间。预热期间反复查询 `/health`；只有 `modelLoaded` 为 `true` 后，再从小程序发起图片识别。
+模型文件在 Docker 构建阶段下载并固化到 `/opt/formula-model`。服务运行时启用离线模式，不会再从 Hugging Face 下载文件。服务创建与健康检查不加载模型；调用 `POST /warmup` 后从本地文件初始化 ONNX 模型。小程序会轮询 `/health`，只有 `modelLoaded` 为 `true` 后才发起图片识别。
 
 模型输出仅用于辅助录入，用户仍须在公式编辑器中确认后再绘图。不要把模型输出当作数学符号完全正确的保证。
 

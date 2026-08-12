@@ -10,11 +10,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
-from .engine import FormulaEngine
+from .engine import FormulaEngine, FormulaModelLoadingError
 
 
 MAX_IMAGE_BYTES = max(256 * 1024, int(os.getenv("FORMULA_OCR_MAX_IMAGE_BYTES", str(4 * 1024 * 1024))))
-SERVICE_RELEASE = os.getenv("FORMULA_OCR_RELEASE", "formula-only-onnx-v1")
+SERVICE_RELEASE = os.getenv("FORMULA_OCR_RELEASE", "formula-only-onnx-v2")
 ENGINE = FormulaEngine()
 
 
@@ -82,6 +82,11 @@ async def recognize(request: RecognizeRequest) -> dict:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="image exceeds limit")
     try:
         result = await asyncio.to_thread(ENGINE.recognize, image_bytes)
+    except FormulaModelLoadingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "MODEL_LOADING", "message": str(error)},
+        ) from error
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
     except Exception as error:

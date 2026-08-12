@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from app.engine import FormulaEngine
+from app.engine import FormulaEngine, FormulaModelLoadingError
 
 
 class StubFormulaEngine(FormulaEngine):
@@ -88,6 +88,20 @@ class FormulaEngineTests(unittest.TestCase):
         self.assertEqual(result["model"], "breezedeus/pix2text-mfr-1.5")
         self.assertEqual(processor.return_tensors, "pt")
         self.assertEqual(model.max_new_tokens, 512)
+
+    def test_recognize_starts_background_load_without_blocking_request(self) -> None:
+        engine = StubFormulaEngine()
+        image = Image.new("RGB", (32, 32), "white")
+        buffer = BytesIO()
+        image.save(buffer, format="PNG")
+
+        started_at = time.monotonic()
+        with self.assertRaises(FormulaModelLoadingError):
+            engine.recognize(buffer.getvalue())
+
+        self.assertLess(time.monotonic() - started_at, 0.1)
+        self.assertTrue(engine.load_started.wait(timeout=0.5))
+        engine.allow_load_to_finish.set()
 
 
 if __name__ == "__main__":
