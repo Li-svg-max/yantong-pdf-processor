@@ -24,8 +24,8 @@ class RecognizeRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if os.getenv("FORMULA_OCR_EAGER_LOAD", "1") == "1":
-        await asyncio.to_thread(ENGINE.load)
+    if os.getenv("FORMULA_OCR_PRELOAD", "1") == "1":
+        ENGINE.preload()
     yield
 
 
@@ -49,6 +49,8 @@ def health() -> dict:
         "ok": True,
         "service": "yantong-formula-ocr",
         "modelLoaded": ENGINE.loaded,
+        "modelLoading": ENGINE.loading,
+        "modelError": ENGINE.load_error,
         "engine": "pix2text-text-formula-ocr",
         "serverTimeMs": int(time.time() * 1000),
     }
