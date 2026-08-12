@@ -56,13 +56,19 @@ class FormulaEngine:
                 self._loading = True
                 self._load_error = ""
             try:
-                from pix2text.text_formula_ocr import TextFormulaOCR
+                from optimum.onnxruntime import ORTModelForVision2Seq
+                from transformers import TrOCRProcessor
 
-                self._engine = TextFormulaOCR.from_config(
-                    enable_formula=True,
-                    enable_spell_checker=False,
-                    device=os.getenv("FORMULA_OCR_DEVICE", "cpu"),
+                model_id = os.getenv("FORMULA_OCR_MODEL", "breezedeus/pix2text-mfr-1.5")
+                device = os.getenv("FORMULA_OCR_DEVICE", "cpu")
+                processor = TrOCRProcessor.from_pretrained(model_id)
+                model = ORTModelForVision2Seq.from_pretrained(
+                    model_id,
+                    provider="CPUExecutionProvider",
+                    use_cache=False,
                 )
+                model.to(device)
+                self._engine = {"model": model, "processor": processor, "modelId": model_id}
             except Exception as error:
                 with self._state_lock:
                     self._load_error = f"{type(error).__name__}: {error}"[:500]
@@ -80,18 +86,20 @@ class FormulaEngine:
             raise ValueError("image dimensions are too large")
         engine = self.load()
         with self._recognize_lock:
-            result = engine.recognize(
-                image,
-                return_text=True,
-                contain_formula=True,
-                resized_shape=int(os.getenv("FORMULA_OCR_RESIZED_SHAPE", "900")),
-                auto_line_break=False,
+            processor = engine["processor"]
+            model = engine["model"]
+            pixel_values = processor(images=[image], return_tensors="pt").pixel_values
+            generated_ids = model.generate(
+                pixel_values.to(os.getenv("FORMULA_OCR_DEVICE", "cpu")),
+                max_new_tokens=int(os.getenv("FORMULA_OCR_MAX_NEW_TOKENS", "512")),
             )
-        latex = str(result or "").strip()
+            result = processor.batch_decode(generated_ids, skip_special_tokens=True)
+        latex = str(result[0] if result else "").strip()
         if not latex:
             raise ValueError("no formula detected")
         return {
             "latex": latex,
             "editableExpression": editable_expression(latex),
-            "engine": "pix2text-text-formula-ocr",
+            "engine": "pix2text-mfr-onnx",
+            "model": engine["modelId"],
         }

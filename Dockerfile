@@ -3,10 +3,12 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FORMULA_OCR_PRELOAD=0 \
-    FORMULA_OCR_DEVICE=cpu
+    FORMULA_OCR_DEVICE=cpu \
+    HF_HOME=/home/appuser/.cache/huggingface \
+    TRANSFORMERS_CACHE=/home/appuser/.cache/huggingface
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl libgomp1 libgl1 libglib2.0-0 \
+    && apt-get install -y --no-install-recommends curl libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -14,17 +16,15 @@ COPY requirements.txt constraints.txt ./
 RUN curl --fail --location --retry 5 --retry-all-errors --progress-bar \
       -o "/tmp/torch-2.7.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
       "https://download.pytorch.org/whl/cpu/torch-2.7.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
-    && curl --fail --location --retry 5 --retry-all-errors --progress-bar \
-      -o "/tmp/torchvision-0.22.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
-      "https://download.pytorch.org/whl/cpu/torchvision-0.22.1%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
     && pip install --no-cache-dir \
       "/tmp/torch-2.7.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
-      "/tmp/torchvision-0.22.1+cpu-cp311-cp311-manylinux_2_28_x86_64.whl" \
-    && rm -f /tmp/torch-*.whl /tmp/torchvision-*.whl \
+    && rm -f /tmp/torch-*.whl \
     && pip install --no-cache-dir -c constraints.txt -r requirements.txt
 COPY app ./app
 
-RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /home/appuser/.cache/huggingface \
+    && chown -R appuser:appuser /app /home/appuser/.cache
 USER appuser
 EXPOSE 8080
 

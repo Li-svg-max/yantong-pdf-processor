@@ -1,36 +1,41 @@
-# 公式 OCR 独立服务
+# 公式 OCR 服务
 
-该服务只负责把单张公式图片识别为 LaTeX，数学工具页随后将结果放入可编辑公式框。它与 PDF 裁剪服务分开部署，避免模型运行时拖慢题号检测和裁剪任务。
+该服务只处理一张已裁剪的公式图片，并返回 LaTeX 与可编辑表达式。它与 PDF 裁剪服务独立部署。
 
-## 部署边界
+本版本直接使用 `breezedeus/pix2text-mfr-1.5` 的 ONNX 公式识别模型，不安装 Pix2Text 的文字 OCR、版面分析、PDF 和图像检测组件。这样能避免把无关依赖打进镜像，降低云托管的镜像拉取、启动和内存压力。
 
-- 云托管服务名必须为 `formula-ocr`，容器端口 `8080`；
-- CPU 方案建议至少 4 核 8GB，单实例并发设为 1，并保留最少 1 个实例以避免首次加载超时；
-- 模型会在容器启动阶段下载并加载，首次发布可能需要数分钟；服务稳定后再发布新版本，避免在模型加载期间切流；
-- 当前接口限制单图 4MB、2000 万像素，小程序会先压缩再传输；
-- 返回内容必须由用户在公式编辑器中确认后再绘图，不能承诺数学符号 100% 正确。
+## 云托管创建参数
 
-## CloudBase 发布参数
-
+- 服务名称：`formula-ocr`
 - 代码仓库：`Li-svg-max/yantong-pdf-processor`
 - 分支：`formula-ocr`
 - 构建目录：仓库根目录
 - Dockerfile：`Dockerfile`
 - 监听端口：`8080`
+- 健康检查路径：`/__tcb_probe__`
 - 最小实例数：`1`
 - 最大实例数：`1`
 - 单实例并发：`1`
-- 健康检查路径：`/__tcb_probe__`
+- 建议规格：先使用 `4 核 8GB` CPU；模型成功加载并完成一轮识别测试后，再按实际内存占用下调。
 
-该分支与 `main` 中的 PDF 处理服务完全隔离，不会触发 `pdf-processor` 的源码发布。创建云托管服务时必须使用服务名 `formula-ocr`，否则小程序的 `wx.cloud.callContainer` 无法路由到该容器。
+创建成功后，先通过 `GET /health` 查看服务状态。首次返回应包含：
 
-发布完成后，`GET /health` 应返回 `ok: true`、`modelLoaded: true` 和 `service: yantong-formula-ocr`。若 `modelLoaded` 不是 `true`，不要开始图片识别测试。
+```json
+{
+  "ok": true,
+  "service": "yantong-formula-ocr",
+  "release": "formula-only-onnx-v1",
+  "modelLoaded": false,
+  "modelLoading": false,
+  "modelError": ""
+}
+```
 
-构建日志中不应出现 `nvidia-cuda-*`、`nvidia-cudnn-*` 或 `nvidia-nccl-*`。这些依赖表示 pip 错误安装了 GPU 版 PyTorch，会把镜像膨胀到约 10GB 并导致 CloudBase 推送超时。当前 Dockerfile 通过固定 URL 和 `constraints.txt` 安装 CPU 轮子；正常镜像不应包含 CUDA 运行库。固定 wheel 下载阶段会输出进度，避免构建平台因长时间无日志而中止。
+服务创建与健康检查不加载模型。只有调用 `POST /warmup` 或首次调用 `POST /recognize` 时才会下载并加载公式模型，因此第一次预热需要较长时间。预热期间反复查询 `/health`；只有 `modelLoaded` 为 `true` 后，再从小程序发起图片识别。
 
-部署前必须分别核对 Pix2Text 代码、检测模型、公式识别模型及底层 OCR 组件的许可证和商用条件。模型输出、用户确认结果和原图应分开保存；当前版本不持久化公式图片。
+模型输出仅用于辅助录入，用户仍须在公式编辑器中确认后再绘图。不要把模型输出当作数学符号完全正确的保证。
 
-本地测试（不加载模型）：
+## 本地验证
 
 ```powershell
 python -m unittest discover -s tests -v

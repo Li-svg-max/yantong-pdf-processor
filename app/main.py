@@ -14,6 +14,7 @@ from .engine import FormulaEngine
 
 
 MAX_IMAGE_BYTES = max(256 * 1024, int(os.getenv("FORMULA_OCR_MAX_IMAGE_BYTES", str(4 * 1024 * 1024))))
+SERVICE_RELEASE = os.getenv("FORMULA_OCR_RELEASE", "formula-only-onnx-v1")
 ENGINE = FormulaEngine()
 
 
@@ -49,10 +50,11 @@ def health() -> dict:
     return {
         "ok": True,
         "service": "yantong-formula-ocr",
+        "release": SERVICE_RELEASE,
         "modelLoaded": ENGINE.loaded,
         "modelLoading": ENGINE.loading,
         "modelError": ENGINE.load_error,
-        "engine": "pix2text-text-formula-ocr",
+        "engine": "pix2text-mfr-onnx",
         "serverTimeMs": int(time.time() * 1000),
     }
 
