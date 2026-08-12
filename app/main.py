@@ -24,7 +24,7 @@ class RecognizeRequest(BaseModel):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if os.getenv("FORMULA_OCR_PRELOAD", "1") == "1":
+    if os.getenv("FORMULA_OCR_PRELOAD", "0") == "1":
         ENGINE.preload()
     yield
 
@@ -38,6 +38,7 @@ app = FastAPI(
 )
 
 
+@app.get("/")
 @app.get("/__tcb_probe__")
 def cloudbase_probe() -> dict:
     return {"ok": True}
