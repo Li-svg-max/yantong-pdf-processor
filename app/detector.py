@@ -122,7 +122,9 @@ class FormulaDetector:
             raise ValueError("image dimensions are too large")
         model = self.require_loaded()
         confidence = float(os.getenv("FORMULA_DETECTOR_CONFIDENCE", "0.20"))
-        input_size = int(os.getenv("FORMULA_DETECTOR_INPUT_SIZE", "960"))
+        # Region proposals do not need the recognizer's detail level. Keeping this
+        # lower improves CPU latency for camera photos; deployments can override it.
+        input_size = int(os.getenv("FORMULA_DETECTOR_INPUT_SIZE", "768"))
         with self._detect_lock:
             results = model.predict(
                 image,

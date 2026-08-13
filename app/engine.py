@@ -115,7 +115,7 @@ class FormulaEngine:
             pixel_values = processor(images=[image], return_tensors="pt").pixel_values
             generated_ids = model.generate(
                 pixel_values.to(os.getenv("FORMULA_OCR_DEVICE", "cpu")),
-                max_new_tokens=int(os.getenv("FORMULA_OCR_MAX_NEW_TOKENS", "512")),
+                max_new_tokens=int(os.getenv("FORMULA_OCR_MAX_NEW_TOKENS", "256")),
             )
             result = processor.batch_decode(generated_ids, skip_special_tokens=True)
         latex = str(result[0] if result else "").strip()
