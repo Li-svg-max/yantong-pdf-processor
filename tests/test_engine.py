@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from app.engine import FormulaEngine, FormulaModelLoadingError
+from app.engine import FormulaEngine, FormulaModelLoadingError, is_usable_formula
 
 
 class StubFormulaEngine(FormulaEngine):
@@ -24,6 +24,12 @@ class StubFormulaEngine(FormulaEngine):
 
 
 class FormulaEngineTests(unittest.TestCase):
+    def test_formula_validation_rejects_incomplete_results(self) -> None:
+        self.assertFalse(is_usable_formula("\\"))
+        self.assertFalse(is_usable_formula("^"))
+        self.assertFalse(is_usable_formula(""))
+        self.assertTrue(is_usable_formula(r"\\frac{x^2}{2}"))
+
     def test_preload_does_not_block_service_startup(self) -> None:
         engine = StubFormulaEngine()
 

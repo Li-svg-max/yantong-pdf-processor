@@ -1,8 +1,8 @@
 # 公式 OCR 服务
 
-该服务只处理一张已裁剪的公式图片，并返回 LaTeX 与可编辑表达式。它与 PDF 裁剪服务独立部署。
+该服务使用两阶段流程：先从整张题图中定位公式区域，再将用户选择的区域识别为 LaTeX 与可编辑表达式。它与 PDF 裁剪服务独立部署。
 
-本版本直接使用 `breezedeus/pix2text-mfr-1.5` 的 ONNX 公式识别模型，不安装 Pix2Text 的文字 OCR、版面分析、PDF 和图像检测组件。这样能避免把无关依赖打进镜像，降低云托管的镜像拉取、启动和内存压力。
+本版本使用 `breezedeus/pix2text-mfd-1.5` 公式区域检测模型和 `breezedeus/pix2text-mfr-1.5` ONNX 公式识别模型。它不会安装完整的文字 OCR、PDF 和版面分析链路，但会多出约 77MB 的检测模型和必要运行依赖。
 
 ## 云托管创建参数
 
@@ -24,14 +24,21 @@
 {
   "ok": true,
   "service": "yantong-formula-ocr",
-  "release": "formula-only-onnx-v2",
+  "release": "mfd-mfr-onnx-v3",
   "modelLoaded": false,
+  "detectorLoaded": false,
   "modelLoading": false,
   "modelError": ""
 }
 ```
 
-模型文件在 Docker 构建阶段下载并固化到 `/opt/formula-model`。服务运行时启用离线模式，不会再从 Hugging Face 下载文件。服务创建与健康检查不加载模型；调用 `POST /warmup` 后从本地文件初始化 ONNX 模型。小程序会轮询 `/health`，只有 `modelLoaded` 为 `true` 后才发起图片识别。
+模型文件在 Docker 构建阶段下载并固化到 `/opt/formula-model` 和 `/opt/formula-detector`。服务运行时启用离线模式，不会再从 Hugging Face 下载文件。服务创建与健康检查不加载模型；调用 `POST /warmup` 后从本地文件初始化两个模型。小程序会轮询 `/health`，只有 `modelLoaded` 与 `detectorLoaded` 都为 `true` 后才发起图片识别。
+
+## 接口
+
+- `POST /analyze`：返回按阅读顺序排列的公式候选框。
+- `POST /recognize-region`：仅识别传入候选框，适合一张题图中有多个公式。
+- `POST /recognize`：整图回退识别，仅适合已经裁剪为单条公式的图片。
 
 模型输出仅用于辅助录入，用户仍须在公式编辑器中确认后再绘图。不要把模型输出当作数学符号完全正确的保证。
 

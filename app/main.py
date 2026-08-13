@@ -10,12 +10,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 
+from .detector import FormulaDetector, FormulaDetectorLoadingError
 from .engine import FormulaEngine, FormulaModelLoadingError
 
 
 MAX_IMAGE_BYTES = max(256 * 1024, int(os.getenv("FORMULA_OCR_MAX_IMAGE_BYTES", str(4 * 1024 * 1024))))
-SERVICE_RELEASE = os.getenv("FORMULA_OCR_RELEASE", "formula-only-onnx-v2")
+SERVICE_RELEASE = os.getenv("FORMULA_OCR_RELEASE", "mfd-mfr-onnx-v3")
 ENGINE = FormulaEngine()
+DETECTOR = FormulaDetector()
 
 
 class RecognizeRequest(BaseModel):
@@ -23,10 +25,26 @@ class RecognizeRequest(BaseModel):
     mimeType: str = "image/jpeg"
 
 
+class Region(BaseModel):
+    left: int = Field(ge=0)
+    top: int = Field(ge=0)
+    width: int = Field(gt=0)
+    height: int = Field(gt=0)
+
+
+class RecognizeRegionRequest(RecognizeRequest):
+    region: Region
+
+
+class WarmupRequest(BaseModel):
+    targets: list[str] = ["recognizer", "detector"]
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if os.getenv("FORMULA_OCR_PRELOAD", "0") == "1":
         ENGINE.preload()
+        DETECTOR.preload()
     yield
 
 
@@ -54,24 +72,33 @@ def health() -> dict:
         "modelLoaded": ENGINE.loaded,
         "modelLoading": ENGINE.loading,
         "modelError": ENGINE.load_error,
+        "detectorLoaded": DETECTOR.loaded,
+        "detectorLoading": DETECTOR.loading,
+        "detectorError": DETECTOR.load_error,
         "engine": "pix2text-mfr-onnx",
         "serverTimeMs": int(time.time() * 1000),
     }
 
 
 @app.post("/warmup", status_code=status.HTTP_202_ACCEPTED)
-def warmup() -> dict:
-    ENGINE.preload()
+def warmup(request: WarmupRequest | None = None) -> dict:
+    targets = set((request.targets if request else ["recognizer", "detector"]))
+    if "recognizer" in targets:
+        ENGINE.preload()
+    if "detector" in targets:
+        DETECTOR.preload()
     return {
         "accepted": True,
         "modelLoaded": ENGINE.loaded,
         "modelLoading": ENGINE.loading,
         "modelError": ENGINE.load_error,
+        "detectorLoaded": DETECTOR.loaded,
+        "detectorLoading": DETECTOR.loading,
+        "detectorError": DETECTOR.load_error,
     }
 
 
-@app.post("/recognize")
-async def recognize(request: RecognizeRequest) -> dict:
+def decode_image(request: RecognizeRequest) -> bytes:
     if not request.mimeType.startswith("image/"):
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail="image required")
     try:
@@ -80,8 +107,48 @@ async def recognize(request: RecognizeRequest) -> dict:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid base64 image") from error
     if not image_bytes or len(image_bytes) > MAX_IMAGE_BYTES:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="image exceeds limit")
+    return image_bytes
+
+
+@app.post("/recognize")
+async def recognize(request: RecognizeRequest) -> dict:
+    image_bytes = decode_image(request)
     try:
         result = await asyncio.to_thread(ENGINE.recognize, image_bytes)
+    except FormulaModelLoadingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "MODEL_LOADING", "message": str(error)},
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="formula model unavailable") from error
+    return {"success": True, "data": result}
+
+
+@app.post("/analyze")
+async def analyze(request: RecognizeRequest) -> dict:
+    image_bytes = decode_image(request)
+    try:
+        result = await asyncio.to_thread(DETECTOR.detect, image_bytes)
+    except FormulaDetectorLoadingError as error:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "DETECTOR_LOADING", "message": str(error)},
+        ) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="formula detector unavailable") from error
+    return {"success": True, "data": result}
+
+
+@app.post("/recognize-region")
+async def recognize_region(request: RecognizeRegionRequest) -> dict:
+    image_bytes = decode_image(request)
+    try:
+        result = await asyncio.to_thread(ENGINE.recognize, image_bytes, request.region.model_dump())
     except FormulaModelLoadingError as error:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

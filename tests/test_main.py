@@ -31,6 +31,9 @@ class FormulaServiceTests(unittest.TestCase):
         self.assertIn("modelLoaded", body)
         self.assertIn("modelLoading", body)
         self.assertIn("modelError", body)
+        self.assertIn("detectorLoaded", body)
+        self.assertIn("detectorLoading", body)
+        self.assertIn("detectorError", body)
 
 
 if __name__ == "__main__":

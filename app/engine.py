@@ -7,11 +7,19 @@ from io import BytesIO
 
 from PIL import Image
 
+from .detector import crop_region
 from .normalization import editable_expression
 
 
 class FormulaModelLoadingError(RuntimeError):
     """The model is being downloaded or initialized in the background."""
+
+
+def is_usable_formula(value: str) -> bool:
+    text = str(value or "").strip()
+    if len(text) < 2 or text in {"\\", "^", "_", "=", "+", "-", "/"}:
+        return False
+    return any(char.isalnum() for char in text)
 
 
 class FormulaEngine:
@@ -92,8 +100,10 @@ class FormulaEngine:
         self.preload()
         raise FormulaModelLoadingError("formula model is loading")
 
-    def recognize(self, image_bytes: bytes) -> dict[str, str]:
+    def recognize(self, image_bytes: bytes, region: dict | None = None) -> dict[str, str]:
         image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        if region:
+            image = crop_region(image, region)
         if image.width < 16 or image.height < 16:
             raise ValueError("image is too small")
         if image.width * image.height > 20_000_000:
@@ -109,11 +119,14 @@ class FormulaEngine:
             )
             result = processor.batch_decode(generated_ids, skip_special_tokens=True)
         latex = str(result[0] if result else "").strip()
-        if not latex:
-            raise ValueError("no formula detected")
-        return {
+        if not is_usable_formula(latex):
+            raise ValueError("formula result is incomplete")
+        result = {
             "latex": latex,
             "editableExpression": editable_expression(latex),
             "engine": "pix2text-mfr-onnx",
             "model": "breezedeus/pix2text-mfr-1.5",
         }
+        if region:
+            result["region"] = region
+        return result
