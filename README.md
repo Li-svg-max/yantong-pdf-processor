@@ -32,7 +32,7 @@
 }
 ```
 
-模型文件在 Docker 构建阶段下载并固化到 `/opt/formula-model` 和 `/opt/formula-detector`。服务运行时启用离线模式，不会再从 Hugging Face 下载文件。服务创建与健康检查不加载模型；调用 `POST /warmup` 后从本地文件初始化两个模型。小程序会轮询 `/health`，只有 `modelLoaded` 与 `detectorLoaded` 都为 `true` 后才发起图片识别。
+模型文件在 Docker 构建阶段下载并固化到 `/opt/formula-model` 和 `/opt/formula-detector`。服务运行时启用离线模式，不会再从 Hugging Face 下载文件。服务启动后默认只在后台预热公式识别模型，区域检测模型按需加载；调用 `POST /warmup` 仍然是幂等的补偿入口。小程序会轮询 `/health`，只有目标模型加载完成后才发起图片识别。已经裁剪到单条公式的图片会跳过区域检测模型，直接使用识别模型。
 
 ## 接口
 

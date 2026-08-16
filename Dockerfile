@@ -2,8 +2,10 @@ FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    FORMULA_OCR_PRELOAD=0 \
+    FORMULA_OCR_PRELOAD=1 \
+    FORMULA_OCR_PRELOAD_TARGETS=recognizer \
     FORMULA_OCR_DEVICE=cpu \
+    FORMULA_DETECTOR_INPUT_SIZE=640 \
     FORMULA_OCR_MODEL=/opt/formula-model \
     FORMULA_DETECTOR_MODEL=/opt/formula-detector/pix2text-mfd-1.5.onnx \
     HF_HOME=/home/appuser/.cache/huggingface \

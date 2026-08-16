@@ -43,8 +43,15 @@ class WarmupRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if os.getenv("FORMULA_OCR_PRELOAD", "0") == "1":
-        ENGINE.preload()
-        DETECTOR.preload()
+        targets = {
+            item.strip().lower()
+            for item in os.getenv("FORMULA_OCR_PRELOAD_TARGETS", "recognizer").split(",")
+            if item.strip()
+        }
+        if "recognizer" in targets:
+            ENGINE.preload()
+        if "detector" in targets:
+            DETECTOR.preload()
     yield
 
 
