@@ -17,6 +17,14 @@ QUESTION_PREFIX = re.compile(
 PREFIX_TO_REMOVE = re.compile(
     r"^\s*(?:第\s*)?\d{1,3}\s*(?:[.．。、:：)）]|题)?\s*"
 )
+OCR_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
+
+
+def _normalize_ocr_text(value: object) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip().translate(OCR_DIGIT_TRANSLATION)
+    # A leading capital I/l or vertical stroke is a common scan OCR error for
+    # the number 1. Restrict this correction to the question-marker position.
+    return re.sub(r"^[Il|]\s*([.．。、:：)）])", r"1\1", text)
 
 
 class PdfProcessingError(RuntimeError):
@@ -143,13 +151,32 @@ class RapidOcrMarkerDetector:
             ) from error
         self._engine = RapidOCR()
 
+    @staticmethod
+    def _variants(image: Image.Image) -> tuple[Image.Image, ...]:
+        """Build a small, deterministic set of scan variants for RapidOCR.
+
+        Upscaling only low-resolution scans improves digit separation without
+        making normal 220 DPI pages larger. The last variant uses a threshold
+        derived from the page background instead of a fixed global cutoff.
+        """
+        source = image.convert("RGB")
+        if source.width < 1200:
+            scale = min(1.6, 1200 / max(1, source.width))
+            source = source.resize(
+                (max(16, round(source.width * scale)), max(16, round(source.height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+        gray = ImageOps.autocontrast(ImageOps.grayscale(source), cutoff=1)
+        gray_values = np.asarray(gray, dtype=np.uint8)
+        background = float(np.percentile(gray_values, 85)) if gray_values.size else 255.0
+        threshold = int(max(160, min(230, round(background * 0.78))))
+        binary = gray.point(lambda value: 255 if value >= threshold else 0)
+        return (source, gray.convert("RGB"), binary.convert("RGB"))
+
     def __call__(self, page_image: Image.Image, page_index: int) -> list[Marker]:
         scan_width = max(1, round(page_image.width * 0.68))
         scan_image = page_image.crop((0, 0, scan_width, page_image.height)).convert("RGB")
-        gray = ImageOps.autocontrast(ImageOps.grayscale(scan_image))
-        binary = gray.point(lambda value: 255 if value >= 185 else 0)
-        variants = (scan_image, gray.convert("RGB"), binary.convert("RGB"))
-        for variant in variants:
+        for variant in self._variants(scan_image):
             result, _ = self._engine(np.asarray(variant))
             markers: list[Marker] = []
             for row in result or []:
@@ -158,7 +185,7 @@ class RapidOcrMarkerDetector:
                 box, value, confidence = row
                 if float(confidence) < 0.40:
                     continue
-                recognized = re.sub(r"\s+", " ", str(value)).strip()
+                recognized = _normalize_ocr_text(value)
                 match = QUESTION_PREFIX.match(recognized)
                 if not match:
                     continue
@@ -168,7 +195,7 @@ class RapidOcrMarkerDetector:
                 markers.append(
                     Marker(
                         page_index=page_index,
-                        y_ratio=max(0.0, min(1.0, y / page_image.height)),
+                        y_ratio=max(0.0, min(1.0, y / float(variant.height))),
                         number_label=number_label,
                         summary=_clean_summary(recognized, number_label),
                         source="rapidocr_number",
@@ -194,13 +221,12 @@ class RapidOcrMarkerDetector:
         )
         suppressed_pixels = np.asarray(image).copy()
         suppressed_pixels[blue_green_ink] = 255
+        prepared_variants = self._variants(image)
         variants = (
-            (image, "rapidocr_full_text"),
-            (
-                ImageOps.autocontrast(ImageOps.grayscale(image)).convert("RGB"),
-                "rapidocr_full_text_grayscale",
-            ),
+            (prepared_variants[0], "rapidocr_full_text"),
+            (prepared_variants[1], "rapidocr_full_text_grayscale"),
             (Image.fromarray(suppressed_pixels), "rapidocr_annotation_suppressed"),
+            (prepared_variants[2], "rapidocr_adaptive_binary"),
         )
         candidates: list[dict[str, object]] = []
         for variant, source in variants:
@@ -211,7 +237,7 @@ class RapidOcrMarkerDetector:
                     continue
                 box, value, confidence = row
                 confidence = float(confidence)
-                recognized = re.sub(r"\s+", " ", str(value or "")).strip()
+                recognized = _normalize_ocr_text(value)
                 if confidence < 0.25 or not recognized:
                     continue
                 points = np.asarray(box, dtype=float)
