@@ -204,6 +204,23 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual([item.number_label for item in questions], ["1", "2", "3"])
         self.assertTrue(all(item.detection_source == "colored_question_box" for item in questions))
 
+    def test_colored_markers_win_when_ocr_only_finds_one_question(self) -> None:
+        source = WORK / "colored-box-ocr-partial-source.pdf"
+        output = WORK / "colored-box-ocr-partial-output"
+        build_colored_box_scan_pdf(source)
+
+        def partial_ocr(_: Image.Image, page_index: int) -> list[Marker]:
+            return [Marker(page_index, 0.10, "10", "10 lim 2 -> 0", "test_ocr")]
+
+        questions = process_pdf(
+            source,
+            output,
+            PipelineOptions(dpi=180),
+            ocr_detector=partial_ocr,
+        )
+        self.assertEqual([item.number_label for item in questions], ["1", "2", "3"])
+        self.assertTrue(all(item.detection_source == "colored_question_box" for item in questions))
+
     def test_annotation_risk_preserves_original_crop(self) -> None:
         clean = Image.new("RGB", (1200, 800), "white")
         draw = ImageDraw.Draw(clean)

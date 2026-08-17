@@ -178,8 +178,21 @@ def _process_task(task: StoredTask) -> None:
                 ),
                 progress_callback=report_pdf_progress,
             )
+            LOGGER.info(
+                "pdf detected questions job=%s count=%s sources=%s pages=%s",
+                job.jobId,
+                len(questions),
+                sorted({question.detection_source for question in questions}),
+                sorted({page for question in questions for page in question.source_pages}),
+            )
             report(82, "正在保存识别结果")
             uploaded_images = cloud_client.upload_question_assets(job, questions)
+            LOGGER.info(
+                "pdf upload assets job=%s questions=%s image_parts=%s",
+                job.jobId,
+                len(questions),
+                sum(len(parts) for parts in uploaded_images),
+            )
             report(92, "正在完成题目整理")
             progress_reporter.close()
             cloud_client.complete_job(job, questions, uploaded_images)

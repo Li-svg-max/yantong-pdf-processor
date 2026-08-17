@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -13,6 +14,9 @@ from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
 from .models import ImageBatchJobRequest, PdfJobRequest
+
+
+LOGGER = logging.getLogger("yantong-pdf-processor.cloud")
 
 if TYPE_CHECKING:
     from .pdf_pipeline import ProcessedQuestion
@@ -182,6 +186,14 @@ class CloudClient:
             batch = groups[offset : offset + 100]
             complete = offset + len(batch) >= len(groups)
             progress = round(((offset + len(batch)) / max(1, len(groups))) * 100)
+            LOGGER.info(
+                "complete callback job=%s batch_start=%s batch_size=%s total=%s complete=%s",
+                job.jobId,
+                offset,
+                len(batch),
+                len(groups),
+                complete,
+            )
             self._callback(
                 {
                     "type": "completeImportFromProcessor",

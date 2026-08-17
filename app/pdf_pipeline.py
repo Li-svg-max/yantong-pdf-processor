@@ -230,6 +230,48 @@ def _deduplicate_markers(markers: Iterable[Marker]) -> list[Marker]:
     return result
 
 
+def _merge_structural_marker_text(
+    structural: Sequence[Marker],
+    ocr_markers: Sequence[Marker],
+) -> list[Marker]:
+    """Keep structural scan markers while borrowing a readable OCR summary.
+
+    Colored question labels are much more reliable than OCR for deciding where
+    one question starts. OCR is still useful for a short preview, so associate
+    the nearest same-page OCR marker without allowing it to change numbering or
+    split boundaries.
+    """
+    if not structural:
+        return list(ocr_markers)
+    result: list[Marker] = []
+    for marker in structural:
+        same_page = [
+            candidate
+            for candidate in ocr_markers
+            if candidate.page_index == marker.page_index
+        ]
+        nearest = min(
+            same_page,
+            key=lambda candidate: abs(candidate.y_ratio - marker.y_ratio),
+            default=None,
+        )
+        summary = marker.summary
+        if nearest and abs(nearest.y_ratio - marker.y_ratio) <= 0.045:
+            candidate_summary = _clean_summary(nearest.summary, marker.number_label)
+            if not candidate_summary.startswith("第 ") and len(candidate_summary) >= 3:
+                summary = candidate_summary
+        result.append(
+            Marker(
+                page_index=marker.page_index,
+                y_ratio=marker.y_ratio,
+                number_label=marker.number_label,
+                summary=summary,
+                source=marker.source,
+            )
+        )
+    return result
+
+
 class RapidOcrMarkerDetector:
     _shared_instance: "RapidOcrMarkerDetector | None" = None
     _shared_lock = threading.Lock()
@@ -589,6 +631,35 @@ def _detect_markers(
     if text_markers:
         _notify_progress(progress_callback, len(document), len(document), "题号已定位")
         return text_markers
+
+    # A scan may contain printed colored question labels that OCR reads as an
+    # arbitrary digit (or misses entirely). Detect those labels before trusting
+    # OCR marker count. This is the decisive fix for worksheets where one OCR
+    # hit previously caused the whole PDF to be imported as one question.
+    colored_markers: list[Marker] = []
+    next_number = 1
+    for page_index in range(len(document)):
+        page_image = _render_page(document, page_index, options.dpi)
+        page_markers = detect_colored_question_boxes(
+            page_image,
+            page_index,
+            next_number,
+        )
+        colored_markers.extend(page_markers)
+        next_number += len(page_markers)
+        _notify_progress(
+            progress_callback,
+            page_index + 1,
+            len(document),
+            "正在定位题号区域",
+        )
+
+    if len(colored_markers) >= 2:
+        # Multiple labels form a reliable structural numbering system. Return
+        # immediately so a slow OCR model cannot delay a scan that is already
+        # safely splittable; page OCR is still reused later for text content.
+        return colored_markers
+
     try:
         detector = ocr_detector or RapidOcrMarkerDetector.shared()
     except PdfProcessingError:
@@ -610,25 +681,10 @@ def _detect_markers(
                     "正在识别题号",
                 )
     markers = _deduplicate_markers(markers)
+    if colored_markers and len(colored_markers) > len(markers):
+        return _merge_structural_marker_text(colored_markers, markers)
     if markers:
         return markers
-
-    colored_markers: list[Marker] = []
-    next_number = 1
-    for page_index in range(len(document)):
-        page_markers = detect_colored_question_boxes(
-            _render_page(document, page_index, options.dpi),
-            page_index,
-            next_number,
-        )
-        colored_markers.extend(page_markers)
-        next_number += len(page_markers)
-        _notify_progress(
-            progress_callback,
-            page_index + 1,
-            len(document),
-            "正在定位题号区域",
-        )
     return colored_markers
 
 
@@ -651,12 +707,10 @@ def process_pdf(
     if len(document) < 1:
         raise PdfProcessingError("PDF 没有可处理页面")
     text_markers = detect_text_markers(pdf_path)
+    # Do not eagerly start the OCR model. Many scanned workbooks have printed
+    # colored labels and can be split without OCR; loading ONNX for those files
+    # adds several seconds before the first result.
     resolved_ocr_detector = ocr_detector
-    if not text_markers and resolved_ocr_detector is None:
-        try:
-            resolved_ocr_detector = RapidOcrMarkerDetector.shared()
-        except PdfProcessingError:
-            resolved_ocr_detector = None
     if hasattr(resolved_ocr_detector, "start_document"):
         try:
             resolved_ocr_detector.start_document()
@@ -674,6 +728,12 @@ def process_pdf(
         raise PdfProcessingError("没有检测到题号，请确认 PDF 页面中包含清晰题号")
     if len(markers) > options.max_questions:
         raise PdfProcessingError("检测到的题目数量超过处理上限")
+
+    if not text_markers and resolved_ocr_detector is None:
+        try:
+            resolved_ocr_detector = RapidOcrMarkerDetector.shared()
+        except PdfProcessingError:
+            resolved_ocr_detector = None
 
     page_cache: dict[int, Image.Image] = {}
 
