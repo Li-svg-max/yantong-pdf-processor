@@ -5,16 +5,24 @@ import hmac
 import json
 import time
 
-from .models import PdfJobRequest, model_to_dict
+from pydantic import BaseModel
+
+from .models import model_to_dict
 
 
 MAX_FUTURE_TICKET_MS = 10 * 60 * 1000
 
 
-def canonical_ticket(job: PdfJobRequest, expires_at: int) -> bytes:
+def canonical_ticket(job: BaseModel, expires_at: int) -> bytes:
+    job_data = model_to_dict(job)
+    # The PDF ticket is signed by the cloud function before Pydantic adds its
+    # default discriminator. Keep the canonical payload identical on both
+    # sides; image-batch requests carry an explicit discriminator and retain it.
+    if job_data.get("inputKind") == "pdf":
+        job_data.pop("inputKind", None)
     payload = {
         "expiresAt": expires_at,
-        "job": model_to_dict(job),
+        "job": job_data,
     }
     return json.dumps(
         payload,
@@ -24,7 +32,7 @@ def canonical_ticket(job: PdfJobRequest, expires_at: int) -> bytes:
     ).encode("utf-8")
 
 
-def sign_ticket(job: PdfJobRequest, expires_at: int, token: str) -> str:
+def sign_ticket(job: BaseModel, expires_at: int, token: str) -> str:
     return hmac.new(
         token.encode("utf-8"),
         canonical_ticket(job, expires_at),
@@ -33,7 +41,7 @@ def sign_ticket(job: PdfJobRequest, expires_at: int, token: str) -> str:
 
 
 def verify_ticket(
-    job: PdfJobRequest,
+    job: BaseModel,
     expires_at: int,
     signature: str,
     token: str,
@@ -43,7 +51,7 @@ def verify_ticket(
 
 
 def ticket_validation_error(
-    job: PdfJobRequest,
+    job: BaseModel,
     expires_at: int,
     signature: str,
     token: str,

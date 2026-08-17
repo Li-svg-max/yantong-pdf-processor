@@ -99,6 +99,9 @@ class PdfPipelineTests(unittest.TestCase):
         questions = process_pdf(source, output, PipelineOptions(dpi=180))
         self.assertEqual([item.number_label for item in questions], ["1", "2", "3"])
         self.assertIn("first limit", questions[0].summary)
+        self.assertIn("first limit", questions[0].recognized_text)
+        self.assertEqual(questions[0].text_source, "pdf_text")
+        self.assertIn("\n", questions[0].recognized_text)
         self.assertEqual(questions[1].source_pages, (1, 2))
         widths = set()
         for question in questions:
@@ -144,6 +147,54 @@ class PdfPipelineTests(unittest.TestCase):
             [path for question in questions for path in question.image_paths],
             WORK / "scan-crops-contact-sheet.jpg",
         )
+
+    def test_scan_pdf_reuses_page_ocr_rows_and_reports_phase_progress(self) -> None:
+        source = WORK / "scan-page-ocr-source.pdf"
+        output = WORK / "scan-page-ocr-output"
+        build_scan_pdf(source)
+
+        class PageOcrDetector:
+            def __init__(self) -> None:
+                self.page_calls = 0
+                self.crop_calls = 0
+
+            def start_document(self) -> None:
+                pass
+
+            def __call__(self, _image: Image.Image, page_index: int) -> list[Marker]:
+                return [
+                    Marker(0, 0.10, "1", "scanned question content", "test_ocr"),
+                    Marker(0, 0.52, "2", "another scanned question", "test_ocr"),
+                ] if page_index == 0 else []
+
+            def extract_page_rows(self, _image: Image.Image, _page_index: int):
+                self.page_calls += 1
+                return [
+                    (0.10, 0.13, 0.04, "1. scanned question content with x^2", 0.94),
+                    (0.16, 0.19, 0.06, "Keep the complete formula line.", 0.94),
+                    (0.52, 0.55, 0.04, "2. another scanned question with y^2", 0.94),
+                    (0.58, 0.61, 0.06, "Use the complete question text.", 0.94),
+                ]
+
+            def extract_text(self, _image: Image.Image):
+                self.crop_calls += 1
+                return {"text": "crop fallback", "confidence": 0.91, "source": "crop"}
+
+        detector = PageOcrDetector()
+        phases: list[str] = []
+        questions = process_pdf(
+            source,
+            output,
+            PipelineOptions(dpi=180),
+            ocr_detector=detector,
+            progress_callback=lambda _done, _total, phase="": phases.append(phase),
+        )
+        self.assertEqual(detector.page_calls, 1)
+        self.assertEqual(detector.crop_calls, 0)
+        self.assertTrue(all(item.text_source == "rapidocr_page_text" for item in questions))
+        self.assertTrue(all("complete" in item.recognized_text for item in questions))
+        self.assertIn("正在识别题号", phases)
+        self.assertIn("正在整理题目文字", phases)
 
     def test_colored_question_box_fallback(self) -> None:
         source = WORK / "colored-box-source.pdf"
@@ -249,10 +300,12 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertTrue(callback["complete"])
         self.assertEqual(len(callback["questionGroups"]), 3)
         self.assertTrue(
-            callback["questionGroups"][0]["material"]["images"][0]["fileID"].startswith(
+            callback["questionGroups"][0]["processingAssets"]["questionCrops"][0]["fileID"].startswith(
                 "cloud://local.test/private/"
             )
         )
+        self.assertEqual(callback["questionGroups"][0]["material"]["images"], [])
+        self.assertTrue(callback["questionGroups"][0]["textFirstPresentation"])
 
     def test_short_lived_cloudbase_job_ticket(self) -> None:
         job = PdfJobRequest(

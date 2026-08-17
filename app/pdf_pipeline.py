@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -65,6 +66,53 @@ class PipelineOptions:
     max_questions: int = 2000
 
 
+OcrRow = tuple[float, float, float, str, float]
+
+
+def _notify_progress(
+    callback: Callable[..., None] | None,
+    done: int,
+    total: int,
+    status_text: str,
+) -> None:
+    """Keep the public two-argument callback compatible with older callers."""
+    if not callback:
+        return
+    try:
+        callback(done, total, status_text)
+    except TypeError:
+        callback(done, total)
+
+
+def _rows_to_text(rows: Sequence[OcrRow]) -> tuple[str, float]:
+    ordered = sorted(rows, key=lambda item: (item[0], item[2]))
+    if not ordered:
+        return "", 0.0
+    lines: list[list[OcrRow]] = []
+    for row in ordered:
+        row_height = max(0.0001, row[1] - row[0])
+        if not lines:
+            lines.append([row])
+            continue
+        previous = lines[-1]
+        line_top = sum(item[0] for item in previous) / len(previous)
+        line_height = max(
+            row_height,
+            sum(max(0.0001, item[1] - item[0]) for item in previous) / len(previous),
+        )
+        if abs(row[0] - line_top) <= max(0.004, line_height * 0.72):
+            previous.append(row)
+        else:
+            lines.append([row])
+    text_lines = []
+    for line in lines:
+        line.sort(key=lambda item: item[2])
+        text_lines.append(" ".join(item[3] for item in line).strip())
+    text = "\n".join(line for line in text_lines if line).strip()[:12000]
+    confidence = sum(item[4] for item in ordered) / len(ordered)
+    return text, round(confidence, 4)
+
+
 def _clean_summary(value: str, number_label: str) -> str:
     compact = re.sub(r"\s+", " ", value or "").strip()
     compact = PREFIX_TO_REMOVE.sub("", compact).strip(" -_·")
@@ -125,6 +173,47 @@ def detect_text_markers(pdf_path: Path) -> list[Marker]:
     return _deduplicate_markers(markers)
 
 
+def extract_text_layer_question(
+    pdf_path: Path,
+    marker: Marker,
+    next_marker: Marker | None,
+    options: PipelineOptions,
+) -> str:
+    """Read the actual text of one text-layer question without flattening lines.
+
+    A PDF text layer already contains much better punctuation and symbol data
+    than OCR. We keep its visual line boundaries so the client can wrap a
+    passage and a formula naturally instead of receiving one long sentence.
+    """
+    lines: list[str] = []
+    final_page = next_marker.page_index if next_marker else marker.page_index
+    with pdfplumber.open(str(pdf_path)) as document:
+        for page_index in range(marker.page_index, final_page + 1):
+            page = document.pages[page_index]
+            top_ratio = (
+                max(options.top_margin_ratio, marker.y_ratio)
+                if page_index == marker.page_index
+                else options.top_margin_ratio
+            )
+            bottom_ratio = options.bottom_margin_ratio
+            if next_marker and page_index == next_marker.page_index:
+                bottom_ratio = min(options.bottom_margin_ratio, next_marker.y_ratio)
+            top = float(page.height) * top_ratio
+            bottom = float(page.height) * bottom_ratio
+            words = page.extract_words(
+                keep_blank_chars=False,
+                use_text_flow=True,
+                extra_attrs=["size"],
+            )
+            visible_words = [
+                word
+                for word in words
+                if top <= (float(word["top"]) + float(word["bottom"])) / 2 < bottom
+            ]
+            lines.extend(_line_text(line) for line in _group_words_into_lines(visible_words))
+    return "\n".join(line for line in lines if line).strip()
+
+
 def _deduplicate_markers(markers: Iterable[Marker]) -> list[Marker]:
     ordered = sorted(markers, key=lambda item: (item.page_index, item.y_ratio))
     result: list[Marker] = []
@@ -142,6 +231,9 @@ def _deduplicate_markers(markers: Iterable[Marker]) -> list[Marker]:
 
 
 class RapidOcrMarkerDetector:
+    _shared_instance: "RapidOcrMarkerDetector | None" = None
+    _shared_lock = threading.Lock()
+
     def __init__(self) -> None:
         try:
             from rapidocr_onnxruntime import RapidOCR
@@ -150,6 +242,20 @@ class RapidOcrMarkerDetector:
                 f"扫描版 PDF OCR 导入失败: {type(error).__name__}: {error}"
             ) from error
         self._engine = RapidOCR()
+        self._page_rows: dict[int, tuple[OcrRow, ...]] = {}
+
+    @classmethod
+    def shared(cls) -> "RapidOcrMarkerDetector":
+        """Reuse the ONNX session across queued jobs in the same container."""
+        if cls._shared_instance is None:
+            with cls._shared_lock:
+                if cls._shared_instance is None:
+                    cls._shared_instance = cls()
+        return cls._shared_instance
+
+    def start_document(self) -> None:
+        """Drop page OCR rows from the previous PDF before starting a new one."""
+        self._page_rows = {}
 
     @staticmethod
     def _variants(image: Image.Image) -> tuple[Image.Image, ...]:
@@ -173,45 +279,88 @@ class RapidOcrMarkerDetector:
         binary = gray.point(lambda value: 255 if value >= threshold else 0)
         return (source, gray.convert("RGB"), binary.convert("RGB"))
 
-    def __call__(self, page_image: Image.Image, page_index: int) -> list[Marker]:
-        scan_width = max(1, round(page_image.width * 0.68))
-        scan_image = page_image.crop((0, 0, scan_width, page_image.height)).convert("RGB")
-        for variant in self._variants(scan_image):
-            result, _ = self._engine(np.asarray(variant))
-            markers: list[Marker] = []
-            for row in result or []:
-                if not row or len(row) < 3:
-                    continue
-                box, value, confidence = row
-                if float(confidence) < 0.40:
-                    continue
-                recognized = _normalize_ocr_text(value)
-                match = QUESTION_PREFIX.match(recognized)
-                if not match:
-                    continue
-                points = np.asarray(box, dtype=float)
-                y = float(points[:, 1].min())
-                number_label = match.group(1)
-                markers.append(
-                    Marker(
-                        page_index=page_index,
-                        y_ratio=max(0.0, min(1.0, y / float(variant.height))),
-                        number_label=number_label,
-                        summary=_clean_summary(recognized, number_label),
-                        source="rapidocr_number",
-                    )
+    @staticmethod
+    def _fit_width(image: Image.Image, max_width: int = 2200) -> Image.Image:
+        source = image.convert("RGB")
+        if source.width <= max_width:
+            return source
+        height = max(1, round(source.height * max_width / source.width))
+        return source.resize((max_width, height), Image.Resampling.LANCZOS)
+
+    def _read_rows_from_variant(
+        self,
+        variant: Image.Image,
+        minimum_confidence: float = 0.25,
+    ) -> list[OcrRow]:
+        result, _ = self._engine(np.asarray(variant))
+        rows: list[OcrRow] = []
+        width = max(1.0, float(variant.width))
+        height = max(1.0, float(variant.height))
+        for row in result or []:
+            if not row or len(row) < 3:
+                continue
+            box, value, confidence = row
+            confidence = float(confidence)
+            recognized = _normalize_ocr_text(value)
+            if confidence < minimum_confidence or not recognized:
+                continue
+            points = np.asarray(box, dtype=float)
+            rows.append(
+                (
+                    float(points[:, 1].min()) / height,
+                    float(points[:, 1].max()) / height,
+                    float(points[:, 0].min()) / width,
+                    recognized,
+                    confidence,
                 )
-            markers = _deduplicate_markers(markers)
-            if markers:
-                return markers
-        return []
+            )
+        return sorted(rows, key=lambda item: (item[0], item[2]))
+
+    def extract_page_rows(self, page_image: Image.Image, page_index: int) -> list[OcrRow]:
+        """OCR one rendered page and retain rows for all questions on that page."""
+        cached = self._page_rows.get(page_index)
+        if cached is not None:
+            return list(cached)
+        image = self._fit_width(page_image)
+        variants = self._variants(image)
+        best: list[OcrRow] = []
+        # The original color pass is fastest and preserves formula glyphs.
+        for variant in variants[:2]:
+            rows = self._read_rows_from_variant(variant)
+            if len(rows) > len(best) or (
+                rows and sum(item[4] for item in rows) / len(rows)
+                > (sum(item[4] for item in best) / len(best) if best else 0)
+            ):
+                best = rows
+            if len(rows) >= 4 and sum(item[4] for item in rows) / len(rows) >= 0.78:
+                break
+        self._page_rows[page_index] = tuple(best)
+        return list(best)
+
+    def __call__(self, page_image: Image.Image, page_index: int) -> list[Marker]:
+        rows = self.extract_page_rows(page_image, page_index)
+        markers: list[Marker] = []
+        for y_min, _, x_min, recognized, confidence in rows:
+            if x_min > 0.68 or confidence < 0.40:
+                continue
+            match = QUESTION_PREFIX.match(recognized)
+            if not match:
+                continue
+            number_label = match.group(1)
+            markers.append(
+                Marker(
+                    page_index=page_index,
+                    y_ratio=max(0.0, min(1.0, y_min)),
+                    number_label=number_label,
+                    summary=_clean_summary(recognized, number_label),
+                    source="rapidocr_number",
+                )
+            )
+        return _deduplicate_markers(markers)
 
     def extract_text(self, question_image: Image.Image) -> dict[str, object]:
-        """Recognize a crop while retaining its image as the source of truth."""
-        image = question_image.convert("RGB")
-        if image.width > 2600:
-            height = max(1, round(image.height * 2600 / image.width))
-            image = image.resize((2600, height), Image.Resampling.LANCZOS)
+        """Recognize a crop while preserving visual line structure in text."""
+        image = self._fit_width(question_image)
         pixels = np.asarray(image, dtype=np.int16)
         red, green, blue = pixels[:, :, 0], pixels[:, :, 1], pixels[:, :, 2]
         blue_green_ink = (
@@ -229,40 +378,32 @@ class RapidOcrMarkerDetector:
             (prepared_variants[2], "rapidocr_adaptive_binary"),
         )
         candidates: list[dict[str, object]] = []
-        for variant, source in variants:
-            result, _ = self._engine(np.asarray(variant))
-            rows: list[tuple[float, float, str, float]] = []
-            for row in result or []:
-                if not row or len(row) < 3:
-                    continue
-                box, value, confidence = row
-                confidence = float(confidence)
-                recognized = _normalize_ocr_text(value)
-                if confidence < 0.25 or not recognized:
-                    continue
-                points = np.asarray(box, dtype=float)
-                rows.append(
-                    (
-                        float(points[:, 1].min()),
-                        float(points[:, 0].min()),
-                        recognized,
-                        confidence,
-                    )
-                )
-            rows.sort(key=lambda item: (round(item[0] / 12), item[1]))
+        has_colored_annotation = bool(blue_green_ink.any())
+        for variant_index, (variant, source) in enumerate(variants):
+            rows = self._read_rows_from_variant(variant)
             if rows:
+                text, confidence = _rows_to_text(rows)
                 candidates.append(
                     {
-                        "text": "\n".join(item[2] for item in rows).strip()[:12000],
-                        "confidence": sum(item[3] for item in rows) / len(rows),
+                        "text": text,
+                        "confidence": confidence,
                         "source": source,
                     }
                 )
+                best_confidence = max(
+                    float(item["confidence"]) for item in candidates
+                )
+                if (
+                    best_confidence >= 0.90
+                    and len(str(candidates[-1]["text"])) >= 12
+                    and (not has_colored_annotation or variant_index >= 2)
+                ):
+                    break
         if not candidates:
             return {"text": "", "confidence": 0.0, "source": "rapidocr_full_text"}
         best = max(
             candidates,
-            key=lambda item: (len(str(item["text"])), float(item["confidence"])),
+            key=lambda item: (float(item["confidence"]), min(300, len(str(item["text"])))),
         )
         return {
             "text": str(best["text"]),
@@ -442,12 +583,14 @@ def _detect_markers(
     options: PipelineOptions,
     ocr_detector: Callable[[Image.Image, int], list[Marker]] | None,
     text_markers: list[Marker] | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> list[Marker]:
     text_markers = detect_text_markers(pdf_path) if text_markers is None else text_markers
     if text_markers:
+        _notify_progress(progress_callback, len(document), len(document), "题号已定位")
         return text_markers
     try:
-        detector = ocr_detector or RapidOcrMarkerDetector()
+        detector = ocr_detector or RapidOcrMarkerDetector.shared()
     except PdfProcessingError:
         detector = None
     markers: list[Marker] = []
@@ -459,6 +602,13 @@ def _detect_markers(
                 )
             except Exception:
                 continue
+            finally:
+                _notify_progress(
+                    progress_callback,
+                    page_index + 1,
+                    len(document),
+                    "正在识别题号",
+                )
     markers = _deduplicate_markers(markers)
     if markers:
         return markers
@@ -473,6 +623,12 @@ def _detect_markers(
         )
         colored_markers.extend(page_markers)
         next_number += len(page_markers)
+        _notify_progress(
+            progress_callback,
+            page_index + 1,
+            len(document),
+            "正在定位题号区域",
+        )
     return colored_markers
 
 
@@ -482,6 +638,7 @@ def process_pdf(
     options: PipelineOptions | None = None,
     ocr_detector: Callable[[Image.Image, int], list[Marker]] | None = None,
     ocr_text_extractor: Callable[[Image.Image], dict[str, object]] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> list[ProcessedQuestion]:
     options = options or PipelineOptions()
     pdf_path = Path(pdf_path)
@@ -497,15 +654,21 @@ def process_pdf(
     resolved_ocr_detector = ocr_detector
     if not text_markers and resolved_ocr_detector is None:
         try:
-            resolved_ocr_detector = RapidOcrMarkerDetector()
+            resolved_ocr_detector = RapidOcrMarkerDetector.shared()
         except PdfProcessingError:
             resolved_ocr_detector = None
+    if hasattr(resolved_ocr_detector, "start_document"):
+        try:
+            resolved_ocr_detector.start_document()
+        except Exception:
+            pass
     markers = _detect_markers(
         pdf_path,
         document,
         options,
         resolved_ocr_detector,
         text_markers=text_markers,
+        progress_callback=progress_callback,
     )
     if not markers:
         raise PdfProcessingError("没有检测到题号，请确认 PDF 页面中包含清晰题号")
@@ -518,6 +681,24 @@ def process_pdf(
         if page_index not in page_cache:
             page_cache[page_index] = _render_page(document, page_index, options.dpi)
         return page_cache[page_index]
+
+    page_ocr_rows: dict[int, list[OcrRow]] = {}
+    page_ocr_extractor = (
+        getattr(resolved_ocr_detector, "extract_page_rows", None)
+        if resolved_ocr_detector is not None
+        else None
+    )
+    if not text_markers and page_ocr_extractor:
+        # __call__ already populated these rows while locating markers. This
+        # lookup is therefore normally free and gives every question on a page
+        # one shared OCR pass instead of one OCR pass per crop.
+        for page_index in sorted({marker.page_index for marker in markers}):
+            try:
+                page_ocr_rows[page_index] = page_ocr_extractor(
+                    page_image(page_index), page_index
+                )
+            except Exception:
+                page_ocr_rows[page_index] = []
 
     results: list[ProcessedQuestion] = []
     for marker_index, marker in enumerate(markers):
@@ -556,10 +737,47 @@ def process_pdf(
         recognized_text = marker.summary
         text_source = "pdf_text_index" if marker.source == "text_layer" else "number_summary"
         text_confidence = 1.0 if marker.source == "text_layer" else 0.0
+        if marker.source == "text_layer":
+            text_layer_value = extract_text_layer_question(
+                pdf_path, marker, next_marker, options
+            )
+            if text_layer_value:
+                recognized_text = text_layer_value[:12000]
+                text_source = "pdf_text"
         extractor = ocr_text_extractor
         if extractor is None and hasattr(resolved_ocr_detector, "extract_text"):
             extractor = getattr(resolved_ocr_detector, "extract_text")
-        if marker.source != "text_layer" and extractor:
+        page_rows_for_question: list[OcrRow] = []
+        if marker.source != "text_layer" and page_ocr_rows:
+            for page_index in range(marker.page_index, end_page + 1):
+                rows = page_ocr_rows.get(page_index, [])
+                top_ratio = (
+                    max(options.top_margin_ratio, marker.y_ratio)
+                    if page_index == marker.page_index
+                    else options.top_margin_ratio
+                )
+                bottom_ratio = options.bottom_margin_ratio
+                if next_marker and page_index == next_marker.page_index:
+                    bottom_ratio = min(options.bottom_margin_ratio, next_marker.y_ratio)
+                page_rows_for_question.extend(
+                    row for row in rows if top_ratio <= row[0] < bottom_ratio
+                )
+            page_text, page_confidence = _rows_to_text(page_rows_for_question)
+            if len(page_text) >= 12:
+                recognized_text = page_text[:12000]
+                text_source = "rapidocr_page_text"
+                text_confidence = page_confidence
+
+        needs_crop_ocr = (
+            marker.source != "text_layer"
+            and extractor
+            and (
+                not page_rows_for_question
+                or text_confidence < 0.78
+                or len(recognized_text.strip()) < 12
+            )
+        )
+        if needs_crop_ocr:
             try:
                 text_result = extractor(stitched) or {}
                 candidate_text = re.sub(
@@ -603,5 +821,11 @@ def process_pdf(
                 detection_source=marker.source,
                 image_quality=image_quality,
             )
+        )
+        _notify_progress(
+            progress_callback,
+            marker_index + 1,
+            len(markers),
+            "正在整理题目文字",
         )
     return results

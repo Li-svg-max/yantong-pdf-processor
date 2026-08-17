@@ -190,25 +190,17 @@ def _build_pdf(request: ExportRequest, mode: str, cache: ImageCache) -> bytes:
         story.append(_pdf_paragraph(f"{label}. 答案：{question.answer or '未录入'}", body))
         if request.settings.includeAnalysis and question.analysis:
             story.append(_pdf_paragraph(f"解析：{question.analysis}", body))
-        if request.settings.includeAnalysis:
-            for image in question.solutionImages:
-                story.append(_pdf_image(cache.get(image), frame_width))
-                story.append(Spacer(1, 4))
 
     if mode in {"questions", "combined"}:
         for group in request.groups:
             story.append(_pdf_paragraph(f"{group.order}. {group.title}", body))
             if group.meta:
                 story.append(_pdf_paragraph(group.meta, meta_style))
-            for image in group.questionImages:
-                story.append(_pdf_image(cache.get(image), frame_width))
-                story.append(Spacer(1, 4))
-            if not group.questionImages:
-                for index, question in enumerate(group.questions):
-                    label = _question_label(group, question, index)
-                    story.append(_pdf_paragraph(f"{label}. {question.stem}", body))
-                    for option in question.options:
-                        story.append(_pdf_paragraph(option, body))
+            for index, question in enumerate(group.questions):
+                label = _question_label(group, question, index)
+                story.append(_pdf_paragraph(f"{label}. {question.stem}", body))
+                for option in question.options:
+                    story.append(_pdf_paragraph(option, body))
             for _ in range(request.settings.blankLines):
                 story.append(Spacer(1, request.settings.fontSize * 1.25))
                 story.append(HRFlowable(width="100%", thickness=0.35, color="#d9dfdc"))
@@ -274,23 +266,17 @@ def _build_docx(request: ExportRequest, mode: str, cache: ImageCache) -> bytes:
         _docx_text(document, f"{label}. 答案：{question.answer or '未录入'}", request.settings.fontSize)
         if request.settings.includeAnalysis and question.analysis:
             _docx_text(document, f"解析：{question.analysis}", request.settings.fontSize)
-        if request.settings.includeAnalysis:
-            for image in question.solutionImages:
-                add_picture(image)
 
     if mode in {"questions", "combined"}:
         for group in request.groups:
             _docx_text(document, f"{group.order}. {group.title}", request.settings.fontSize, True)
             if group.meta:
                 _docx_text(document, group.meta, max(8, request.settings.fontSize - 2))
-            for image in group.questionImages:
-                add_picture(image)
-            if not group.questionImages:
-                for index, question in enumerate(group.questions):
-                    label = _question_label(group, question, index)
-                    _docx_text(document, f"{label}. {question.stem}", request.settings.fontSize)
-                    for option in question.options:
-                        _docx_text(document, option, request.settings.fontSize)
+            for index, question in enumerate(group.questions):
+                label = _question_label(group, question, index)
+                _docx_text(document, f"{label}. {question.stem}", request.settings.fontSize)
+                for option in question.options:
+                    _docx_text(document, option, request.settings.fontSize)
             for _ in range(request.settings.blankLines):
                 _docx_text(document, "________________________________________", request.settings.fontSize)
             if request.settings.packageMode == "combined" and request.settings.solutionMode == "inline":

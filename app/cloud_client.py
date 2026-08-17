@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import urllib.error
 import urllib.request
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
-from .models import PdfJobRequest
+from .models import ImageBatchJobRequest, PdfJobRequest
 
 if TYPE_CHECKING:
     from .pdf_pipeline import ProcessedQuestion
@@ -111,6 +112,20 @@ class CloudClient:
         response = self._cos().get_object(Bucket=bucket, Key=key)
         response["Body"].get_stream_to_file(str(destination))
 
+    def download_image_source(self, file_id: str, destination: Path) -> None:
+        """Download one private image selected by the owner for OCR only."""
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if self.settings.local_mode:
+            source = Path(file_id)
+            if not source.is_file():
+                raise CloudClientError(f"本地题图不存在: {source}")
+            shutil.copy2(source, destination)
+            return
+        source_host, key = _cloud_file_parts(file_id)
+        bucket = _bucket_for_cloud_host(source_host, self.settings.cos_bucket)
+        response = self._cos().get_object(Bucket=bucket, Key=key)
+        response["Body"].get_stream_to_file(str(destination))
+
     def upload_question_assets(
         self,
         job: PdfJobRequest,
@@ -178,6 +193,53 @@ class CloudClient:
                 }
             )
 
+    def complete_image_job(
+        self,
+        job: ImageBatchJobRequest,
+        questions: list[ProcessedQuestion],
+    ) -> None:
+        source_images = [
+            [{"fileID": source.sourceFileID, "alt": f"{job.title}第 {source.numberLabel} 题原图"}]
+            for source in job.images
+        ]
+        groups = [
+            self._build_group(
+                job,
+                question,
+                source_images[index],
+                index,
+                source_format="user_image_ocr",
+            )
+            for index, question in enumerate(questions)
+        ]
+        for offset in range(0, len(groups), 100):
+            batch = groups[offset : offset + 100]
+            complete = offset + len(batch) >= len(groups)
+            progress = round(((offset + len(batch)) / max(1, len(groups))) * 100)
+            self._callback(
+                {
+                    "type": "completeImportFromProcessor",
+                    "processorToken": self.settings.processor_token,
+                    "jobId": job.jobId,
+                    "complete": complete,
+                    "progress": progress,
+                    "questionGroups": batch,
+                }
+            )
+
+    def report_progress(self, job_id: str, progress: int, status_text: str) -> None:
+        """Publish best-effort progress without interrupting OCR processing."""
+        self._callback(
+            {
+                "type": "progressImportFromProcessor",
+                "processorToken": self.settings.processor_token,
+                "jobId": job_id,
+                "progress": max(5, min(95, int(progress))),
+                "statusText": status_text[:40],
+            },
+            timeout=4,
+        )
+
     def fail_job(self, job_id: str, message: str) -> None:
         self._callback(
             {
@@ -188,7 +250,7 @@ class CloudClient:
             }
         )
 
-    def _callback(self, payload: dict) -> dict:
+    def _callback(self, payload: dict, timeout: int = 30) -> dict:
         if self.settings.local_mode:
             target = self.settings.local_storage_dir / "callbacks" / f"{payload['jobId']}.json"
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -205,7 +267,7 @@ class CloudClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 response_body = response.read().decode("utf-8")
         except (urllib.error.URLError, TimeoutError) as error:
             raise CloudClientError(f"回写私人题库失败: {error}") from error
@@ -219,19 +281,29 @@ class CloudClient:
 
     @staticmethod
     def _build_group(
-        job: PdfJobRequest,
+        job: PdfJobRequest | ImageBatchJobRequest,
         question: ProcessedQuestion,
         images: list[dict],
         index: int,
+        source_format: str = "user_pdf_crop",
     ) -> dict:
         group_id = f"private-{job.jobId}-{index + 1:04d}"
         question_id = f"{group_id}-q1"
         summary = question.summary or f"第 {question.number_label} 题"
-        recognized_text = question.recognized_text.strip() or summary
+        recognized_text = question.recognized_text.strip()
         machine_text = question.text_source not in {"pdf_text_index", "number_summary"}
         text_requires_review = machine_text and question.text_confidence < 0.88
+        compact_text = re.sub(r"\s+", "", recognized_text)
+        summary_compact = re.sub(r"\s+", "", summary)
+        text_incomplete = (
+            question.text_source in {"number_summary", "ocr_unavailable"}
+            or len(compact_text) < 8
+            or compact_text == summary_compact
+        )
         requires_visual_review = bool(
-            question.image_quality.get("requiresVisualReview") or text_requires_review
+            question.image_quality.get("requiresVisualReview")
+            or text_requires_review
+            or text_incomplete
         )
         return {
             "id": group_id,
@@ -257,8 +329,11 @@ class CloudClient:
                 "title": f"第 {question.number_label} 题",
                 "topic": job.questionType,
                 "paragraphs": [],
-                "images": images,
+                "images": [],
             },
+            # Crops are retained only for private reprocessing, deletion and
+            # quality tracing. They are removed before any client response.
+            "processingAssets": {"questionCrops": images},
             "subquestions": [
                 {
                     "id": question_id,
@@ -281,10 +356,12 @@ class CloudClient:
             ],
             "questionCount": 1,
             "sourceType": "private_upload",
-            "sourceFormat": "user_pdf_crop",
-            "selectionMode": "number_summary",
+            "sourceFormat": source_format,
+            "selectionMode": "machine_ocr",
             "textReviewStatus": (
-                "machine_ocr_needs_review"
+                "ocr_incomplete"
+                if text_incomplete
+                else "machine_ocr_needs_review"
                 if text_requires_review
                 else "machine_ocr"
                 if machine_text
@@ -298,7 +375,8 @@ class CloudClient:
             "sourcePages": list(question.source_pages),
             "status": "未掌握",
             "reviewStatus": "private",
-            "useCroppedQuestionImage": True,
+            "textFirstPresentation": True,
+            "useCroppedQuestionImage": False,
             "detailsLoaded": True,
             "summaryOnly": False,
         }

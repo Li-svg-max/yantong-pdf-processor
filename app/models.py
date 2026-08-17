@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -11,6 +11,7 @@ class ProcessingOptions(BaseModel):
 
 
 class PdfJobRequest(BaseModel):
+    inputKind: Literal["pdf"] = "pdf"
     jobId: str = Field(min_length=1, max_length=120)
     sourceFileID: str = Field(min_length=1, max_length=1000)
     storageOwnerKey: str = Field(min_length=16, max_length=64)
@@ -23,6 +24,28 @@ class PdfJobRequest(BaseModel):
 
 class SignedPdfJobRequest(BaseModel):
     job: PdfJobRequest
+    expiresAt: int
+    signature: str = Field(min_length=64, max_length=64)
+
+
+class ImageSource(BaseModel):
+    sourceFileID: str = Field(min_length=1, max_length=1000)
+    numberLabel: str = Field(min_length=1, max_length=20)
+
+
+class ImageBatchJobRequest(BaseModel):
+    inputKind: Literal["image_batch"]
+    jobId: str = Field(min_length=1, max_length=120)
+    storageOwnerKey: str = Field(min_length=16, max_length=64)
+    title: str = Field(min_length=1, max_length=80)
+    subjectId: str = Field(min_length=1, max_length=30)
+    subjectName: str = Field(min_length=1, max_length=40)
+    questionType: str = Field(default="未分类", max_length=30)
+    images: list[ImageSource] = Field(min_length=1, max_length=20)
+
+
+class SignedImageBatchJobRequest(BaseModel):
+    job: ImageBatchJobRequest
     expiresAt: int
     signature: str = Field(min_length=64, max_length=64)
 

@@ -5,6 +5,7 @@ import hashlib
 import logging
 import os
 import shutil
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -14,7 +15,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, status
 from .cloud_client import CloudClient, CloudSettings
 from .document_export.models import ExportRequest
 from .document_export.renderer import render_export
-from .models import PdfJobRequest, SignedPdfJobRequest, model_to_dict
+from .models import (
+    ImageBatchJobRequest,
+    PdfJobRequest,
+    SignedImageBatchJobRequest,
+    SignedPdfJobRequest,
+    model_to_dict,
+)
 from .queue_store import QueueStore, StoredTask
 from .request_auth import ticket_validation_error
 
@@ -30,6 +37,56 @@ QUEUE = QueueStore(DATA_DIR / "queue.sqlite3")
 MAX_ATTEMPTS = max(1, min(10, int(os.getenv("MAX_PROCESS_ATTEMPTS", "3"))))
 POLL_INTERVAL = max(0.2, float(os.getenv("QUEUE_POLL_INTERVAL", "1")))
 EXPORT_LOCK = asyncio.Lock()
+
+
+class ProgressReporter:
+    """Coalesce progress writes so a slow callback never pauses OCR."""
+
+    def __init__(self, cloud_client: CloudClient, job_id: str) -> None:
+        self._client = cloud_client
+        self._job_id = job_id
+        self._condition = threading.Condition()
+        self._pending: tuple[int, str] | None = None
+        self._closed = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"progress-{job_id[-12:]}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def submit(self, progress: int, status_text: str) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._pending = (progress, status_text)
+            self._condition.notify()
+
+    def close(self) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._closed = True
+            self._condition.notify()
+        # A terminal callback runs only after the last progress value has
+        # either reached the database or timed out.
+        self._thread.join(timeout=5)
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while self._pending is None and not self._closed:
+                    self._condition.wait()
+                if self._pending is None and self._closed:
+                    return
+                progress, status_text = self._pending
+                self._pending = None
+            try:
+                self._client.report_progress(self._job_id, progress, status_text)
+            except Exception:
+                LOGGER.warning(
+                    "progress callback failed job=%s", self._job_id, exc_info=True
+                )
 
 
 def _expected_token() -> str:
@@ -53,27 +110,82 @@ def require_processor_token(authorization: str = Header(default="")) -> None:
 
 
 def _process_task(task: StoredTask) -> None:
+    from .image_pipeline import process_image_batch
     from .pdf_pipeline import PipelineOptions, process_pdf
 
-    job = PdfJobRequest(**task.payload)
-    workspace = DATA_DIR / "work" / job.jobId
+    workspace = DATA_DIR / "work" / task.job_id
     if workspace.exists():
         shutil.rmtree(workspace)
-    input_path = workspace / "source.pdf"
-    output_dir = workspace / "questions"
     cloud_client = CloudClient(CloudSettings.from_environment())
-    cloud_client.download_source(job, input_path)
-    questions = process_pdf(
-        input_path,
-        output_dir,
-        PipelineOptions(
-            dpi=job.options.dpi,
-            max_questions=job.options.maxQuestions,
-        ),
-    )
-    uploaded_images = cloud_client.upload_question_assets(job, questions)
-    cloud_client.complete_job(job, questions, uploaded_images)
-    shutil.rmtree(workspace, ignore_errors=True)
+    progress_reporter = ProgressReporter(cloud_client, task.job_id)
+    last_reported_progress = 0
+    last_reported_status = ""
+
+    def report(progress: int, status_text: str) -> None:
+        nonlocal last_reported_progress, last_reported_status
+        progress = max(5, min(95, int(progress)))
+        if (
+            status_text == last_reported_status
+            and progress < 95
+            and progress - last_reported_progress < 3
+        ):
+            return
+        progress_reporter.submit(progress, status_text)
+        last_reported_progress = progress
+        last_reported_status = status_text
+
+    try:
+        if task.payload.get("inputKind") == "image_batch":
+            job = ImageBatchJobRequest(**task.payload)
+            image_sources = []
+            report(8, "正在下载题目图片")
+            for index, item in enumerate(job.images, start=1):
+                suffix = Path(item.sourceFileID).suffix or ".jpg"
+                path = workspace / "images" / f"{index:03d}{suffix}"
+                cloud_client.download_image_source(item.sourceFileID, path)
+                image_sources.append((path, item.numberLabel))
+            report(15, "正在识别文字")
+            questions = process_image_batch(
+                image_sources,
+                progress_callback=lambda done, total: report(
+                    15 + round(done / max(1, total) * 70), "正在识别文字"
+                ),
+            )
+            report(88, "正在保存识别结果")
+            progress_reporter.close()
+            cloud_client.complete_image_job(job, questions)
+        else:
+            job = PdfJobRequest(**task.payload)
+            input_path = workspace / "source.pdf"
+            output_dir = workspace / "questions"
+
+            def report_pdf_progress(done: int, total: int, phase: str = "") -> None:
+                ratio = done / max(1, total)
+                if phase in {"正在识别题号", "正在定位题号区域", "题号已定位"}:
+                    report(15 + round(ratio * 20), phase or "正在识别题号")
+                else:
+                    report(35 + round(ratio * 47), phase or "正在整理题目文字")
+
+            report(8, "正在下载 PDF")
+            cloud_client.download_source(job, input_path)
+            report(15, "正在识别题号和文字")
+            questions = process_pdf(
+                input_path,
+                output_dir,
+                PipelineOptions(
+                    dpi=job.options.dpi,
+                    max_questions=job.options.maxQuestions,
+                ),
+                progress_callback=report_pdf_progress,
+            )
+            report(82, "正在保存识别结果")
+            uploaded_images = cloud_client.upload_question_assets(job, questions)
+            report(92, "正在完成题目整理")
+            progress_reporter.close()
+            cloud_client.complete_job(job, questions, uploaded_images)
+    finally:
+        progress_reporter.close()
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 async def _worker_loop() -> None:
@@ -200,6 +312,29 @@ def create_job(
 
 @app.post("/cloudbase/jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_cloudbase_job(request: SignedPdfJobRequest) -> dict:
+    validation_error = ticket_validation_error(
+        request.job,
+        request.expiresAt,
+        request.signature,
+        _expected_token(),
+    )
+    if validation_error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=validation_error,
+        )
+    created = QUEUE.enqueue(request.job.jobId, model_to_dict(request.job))
+    current = QUEUE.status(request.job.jobId)
+    return {
+        "accepted": True,
+        "created": created,
+        "jobId": request.job.jobId,
+        "status": current["status"] if current else "queued",
+    }
+
+
+@app.post("/cloudbase/image-jobs", status_code=status.HTTP_202_ACCEPTED)
+def create_cloudbase_image_job(request: SignedImageBatchJobRequest) -> dict:
     validation_error = ticket_validation_error(
         request.job,
         request.expiresAt,
