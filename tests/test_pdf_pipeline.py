@@ -18,6 +18,7 @@ from app.pdf_pipeline import (
     RapidOcrMarkerDetector,
     analyze_image_quality,
     process_pdf,
+    _normalize_math_ocr_text,
 )
 from app.queue_store import QueueStore
 from app.request_auth import sign_ticket, ticket_validation_error, verify_ticket
@@ -266,6 +267,15 @@ class PdfPipelineTests(unittest.TestCase):
         self.assertEqual(result["source"], "rapidocr_annotation_suppressed")
         self.assertEqual(result["text"], "clean printed question text")
         self.assertGreater(result["confidence"], 0.9)
+
+    def test_math_ocr_text_normalization_is_conservative(self) -> None:
+        value = "I= lim x0 1+e 2 sinx-cosx"
+        normalized = _normalize_math_ocr_text(value)
+        self.assertIn("lim x → 0", normalized)
+        self.assertIn("e²", normalized)
+        self.assertIn("sin x", normalized)
+        self.assertIn("cos x", normalized)
+        self.assertNotIn("xsinx", normalized)
 
     def test_queue_and_local_cloud_callback(self) -> None:
         text_source = WORK / "text-source.pdf"

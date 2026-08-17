@@ -19,6 +19,7 @@ PREFIX_TO_REMOVE = re.compile(
     r"^\s*(?:第\s*)?\d{1,3}\s*(?:[.．。、:：)）]|题)?\s*"
 )
 OCR_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
+SUPERSCRIPT_DIGITS = str.maketrans("0123456789+-=()", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾")
 
 
 def _normalize_ocr_text(value: object) -> str:
@@ -26,6 +27,32 @@ def _normalize_ocr_text(value: object) -> str:
     # A leading capital I/l or vertical stroke is a common scan OCR error for
     # the number 1. Restrict this correction to the question-marker position.
     return re.sub(r"^[Il|]\s*([.．。、:：)）])", r"1\1", text)
+
+
+def _normalize_math_ocr_text(value: object) -> str:
+    """Repair unambiguous OCR spacing without inventing missing math.
+
+    RapidOCR returns a linear text stream for formulas. This pass only fixes
+    stable, local patterns such as ``lim x0`` and ``sinx``; it deliberately
+    does not try to reconstruct fractions or integral bounds from pixels.
+    """
+    text = str(value or "").replace("−", "-").replace("﹣", "-")
+    text = re.sub(r"(?i)\blim\s+([A-Za-z])\s*([0-9])\b", r"lim \1 → \2", text)
+    text = re.sub(r"(?i)\blim\s+([0-9])\b", r"lim x → \1", text)
+    text = re.sub(
+        r"(?i)\b(sin|cos|tan|cot|sec|csc|arctan|arcsin|arccos|ln|log)\s*([A-Za-z])",
+        r"\1 \2",
+        text,
+    )
+    text = re.sub(r"(?<=[A-Za-z])\s*\^\s*([0-9]+)", lambda m: "".join(
+        digit.translate(SUPERSCRIPT_DIGITS) for digit in m.group(1)
+    ), text)
+    text = re.sub(r"(?<=[A-Za-z)])\s+([0-9])\b", lambda m: m.group(1).translate(SUPERSCRIPT_DIGITS), text)
+    text = re.sub(r"(?<=[A-Za-z0-9)])\s*([=+])\s*(?=[A-Za-z0-9(])", r" \1 ", text)
+    text = re.sub(r"(?<=[A-Za-z0-9)])\s*-\s*(?=[A-Za-z0-9(])", " - ", text)
+    text = re.sub(r"(?<=[A-Za-z0-9)])\s*/\s*(?=[A-Za-z0-9(])", " / ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
 
 
 class PdfProcessingError(RuntimeError):
@@ -108,7 +135,9 @@ def _rows_to_text(rows: Sequence[OcrRow]) -> tuple[str, float]:
     for line in lines:
         line.sort(key=lambda item: item[2])
         text_lines.append(" ".join(item[3] for item in line).strip())
-    text = "\n".join(line for line in text_lines if line).strip()[:12000]
+    text = "\n".join(line for line in text_lines if line).strip()
+    text = "\n".join(_normalize_math_ocr_text(line) for line in text.splitlines())
+    text = text[:12000]
     confidence = sum(item[4] for item in ordered) / len(ordered)
     return text, round(confidence, 4)
 
