@@ -239,6 +239,21 @@ class CloudClient:
                 }
             )
 
+    def complete_cloze_job(
+        self,
+        job: PdfJobRequest | ImageBatchJobRequest,
+        blocks: list[dict],
+    ) -> None:
+        self._callback(
+            {
+                "type": "completeClozeMaterialFromProcessor",
+                "processorToken": self.settings.processor_token,
+                "jobId": job.jobId,
+                "blocks": blocks,
+            },
+            timeout=60,
+        )
+
     def report_progress(self, job_id: str, progress: int, status_text: str) -> None:
         """Publish best-effort progress without interrupting OCR processing."""
         self._callback(

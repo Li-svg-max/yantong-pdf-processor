@@ -350,7 +350,7 @@ class PdfPipelineTests(unittest.TestCase):
         signature = sign_ticket(job, expires_at, token)
         self.assertEqual(
             signature,
-            "8229bb3ad9a294ad45630239c1c2ac6219ddc0defbcb5ecd126abe9f6021bc03",
+            "4327d4cf0b2ed8b75071c301d5e3d3afda8963d81949270426ac05f705d3ea47",
         )
         self.assertTrue(verify_ticket(job, expires_at, signature, token, now_ms))
         self.assertFalse(verify_ticket(job, now_ms - 1, signature, token, now_ms))

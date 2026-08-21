@@ -50,3 +50,42 @@ class ExportRequest(BaseModel):
     def clean_title(cls, value: str) -> str:
         return " ".join(value.split()) or "我的考研错题集"
 
+
+class ClozeBlank(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    start: int = Field(ge=0, le=12000)
+    end: int = Field(ge=1, le=12000)
+    answer: str = Field(min_length=1, max_length=120)
+    enabled: bool = True
+
+
+class ClozeBlock(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    page: int = Field(default=1, ge=1, le=9999)
+    order: int = Field(default=1, ge=1, le=9999)
+    text: str = Field(min_length=1, max_length=12000)
+    blanks: list[ClozeBlank] = Field(default_factory=list, max_length=100)
+
+
+class ClozeExportRequest(BaseModel):
+    format: Literal["docx"] = "docx"
+    title: str = Field(default="专业课填空练习", min_length=1, max_length=80)
+    courseName: str = Field(default="专业课", min_length=1, max_length=40)
+    blocks: list[ClozeBlock] = Field(min_length=1, max_length=200)
+
+    @field_validator("title", "courseName")
+    @classmethod
+    def clean_cloze_text(cls, value: str) -> str:
+        return " ".join(value.split()) or "专业课填空练习"
+
+
+class SignedExportRequest(BaseModel):
+    request: ExportRequest
+    expiresAt: int
+    signature: str = Field(min_length=64, max_length=64)
+
+
+class SignedClozeExportRequest(BaseModel):
+    request: ClozeExportRequest
+    expiresAt: int
+    signature: str = Field(min_length=64, max_length=64)

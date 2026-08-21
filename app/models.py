@@ -19,6 +19,8 @@ class PdfJobRequest(BaseModel):
     subjectId: str = Field(min_length=1, max_length=30)
     subjectName: str = Field(min_length=1, max_length=40)
     questionType: str = Field(default="未分类", max_length=30)
+    workflowType: Literal["question_import", "cloze_document"] = "question_import"
+    courseName: str = Field(default="", max_length=40)
     options: ProcessingOptions = Field(default_factory=ProcessingOptions)
 
 
@@ -26,6 +28,7 @@ class SignedPdfJobRequest(BaseModel):
     job: PdfJobRequest
     expiresAt: int
     signature: str = Field(min_length=64, max_length=64)
+    ticketSchemaVersion: str | None = Field(default=None, max_length=80)
 
 
 class ImageSource(BaseModel):
@@ -41,6 +44,8 @@ class ImageBatchJobRequest(BaseModel):
     subjectId: str = Field(min_length=1, max_length=30)
     subjectName: str = Field(min_length=1, max_length=40)
     questionType: str = Field(default="未分类", max_length=30)
+    workflowType: Literal["question_import", "cloze_document"] = "question_import"
+    courseName: str = Field(default="", max_length=40)
     images: list[ImageSource] = Field(min_length=1, max_length=20)
 
 
@@ -48,6 +53,7 @@ class SignedImageBatchJobRequest(BaseModel):
     job: ImageBatchJobRequest
     expiresAt: int
     signature: str = Field(min_length=64, max_length=64)
+    ticketSchemaVersion: str | None = Field(default=None, max_length=80)
 
 
 def model_to_dict(model: BaseModel) -> dict[str, Any]:

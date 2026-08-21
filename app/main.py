@@ -13,8 +13,8 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 
 from .cloud_client import CloudClient, CloudSettings
-from .document_export.models import ExportRequest
-from .document_export.renderer import render_export
+from .document_export.models import SignedClozeExportRequest, SignedExportRequest
+from .document_export.renderer import render_cloze_export, render_export
 from .models import (
     ImageBatchJobRequest,
     PdfJobRequest,
@@ -36,7 +36,12 @@ DATA_DIR = Path(os.getenv("PROCESSOR_DATA_DIR", "/data"))
 QUEUE = QueueStore(DATA_DIR / "queue.sqlite3")
 MAX_ATTEMPTS = max(1, min(10, int(os.getenv("MAX_PROCESS_ATTEMPTS", "3"))))
 POLL_INTERVAL = max(0.2, float(os.getenv("QUEUE_POLL_INTERVAL", "1")))
-EXPORT_LOCK = asyncio.Lock()
+MAX_CONCURRENT_EXPORTS = max(
+    1,
+    min(4, int(os.getenv("MAX_CONCURRENT_EXPORTS", "2"))),
+)
+EXPORT_GATE = asyncio.Semaphore(MAX_CONCURRENT_EXPORTS)
+PROCESSOR_TICKET_SCHEMA_VERSION = "2026-08-21-image-cloze-v1"
 
 
 class ProgressReporter:
@@ -98,6 +103,13 @@ def _token_fingerprint() -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12] if token else ""
 
 
+def _ticket_schema_error(ticket_schema_version: str | None) -> str | None:
+    """Reject a known incompatible client before comparing its HMAC."""
+    if ticket_schema_version and ticket_schema_version != PROCESSOR_TICKET_SCHEMA_VERSION:
+        return "processor ticket schema is incompatible"
+    return None
+
+
 def require_processor_token(authorization: str = Header(default="")) -> None:
     expected = _expected_token()
     if not expected:
@@ -112,6 +124,7 @@ def require_processor_token(authorization: str = Header(default="")) -> None:
 def _process_task(task: StoredTask) -> None:
     from .image_pipeline import process_image_batch
     from .pdf_pipeline import PipelineOptions, process_pdf
+    from .study_material_pipeline import process_study_images, process_study_pdf
 
     workspace = DATA_DIR / "work" / task.job_id
     if workspace.exists():
@@ -145,15 +158,26 @@ def _process_task(task: StoredTask) -> None:
                 cloud_client.download_image_source(item.sourceFileID, path)
                 image_sources.append((path, item.numberLabel))
             report(15, "正在识别文字")
-            questions = process_image_batch(
-                image_sources,
-                progress_callback=lambda done, total: report(
-                    15 + round(done / max(1, total) * 70), "正在识别文字"
-                ),
-            )
+            if job.workflowType == "cloze_document":
+                blocks = process_study_images(
+                    [path for path, _ in image_sources],
+                    progress_callback=lambda done, total, phase: report(
+                        15 + round(done / max(1, total) * 70), phase
+                    ),
+                )
+            else:
+                questions = process_image_batch(
+                    image_sources,
+                    progress_callback=lambda done, total: report(
+                        15 + round(done / max(1, total) * 70), "正在识别文字"
+                    ),
+                )
             report(88, "正在保存识别结果")
             progress_reporter.close()
-            cloud_client.complete_image_job(job, questions)
+            if job.workflowType == "cloze_document":
+                cloud_client.complete_cloze_job(job, blocks)
+            else:
+                cloud_client.complete_image_job(job, questions)
         else:
             job = PdfJobRequest(**task.payload)
             input_path = workspace / "source.pdf"
@@ -168,16 +192,30 @@ def _process_task(task: StoredTask) -> None:
 
             report(8, "正在下载 PDF")
             cloud_client.download_source(job, input_path)
-            report(15, "正在识别题号和文字")
-            questions = process_pdf(
-                input_path,
-                output_dir,
-                PipelineOptions(
+            report(15, "正在识别整份资料")
+            if job.workflowType == "cloze_document":
+                blocks = process_study_pdf(
+                    input_path,
                     dpi=job.options.dpi,
-                    max_questions=job.options.maxQuestions,
-                ),
-                progress_callback=report_pdf_progress,
-            )
+                    progress_callback=lambda done, total, phase: report(
+                        15 + round(done / max(1, total) * 70), phase
+                    ),
+                )
+            else:
+                questions = process_pdf(
+                    input_path,
+                    output_dir,
+                    PipelineOptions(
+                        dpi=job.options.dpi,
+                        max_questions=job.options.maxQuestions,
+                    ),
+                    progress_callback=report_pdf_progress,
+                )
+            if job.workflowType == "cloze_document":
+                report(92, "正在保存识别结果")
+                progress_reporter.close()
+                cloud_client.complete_cloze_job(job, blocks)
+                return
             LOGGER.info(
                 "pdf detected questions job=%s count=%s sources=%s pages=%s",
                 job.jobId,
@@ -280,6 +318,7 @@ def health() -> dict:
         "queue": QUEUE.counts(),
         "missing": missing,
         "tokenFingerprint": _token_fingerprint(),
+        "processorTicketSchemaVersion": PROCESSOR_TICKET_SCHEMA_VERSION,
         "serverTimeMs": int(time.time() * 1000),
         "storage": {
             "configuredBucket": settings.cos_bucket,
@@ -290,10 +329,22 @@ def health() -> dict:
 
 
 @app.post("/export")
-async def export_document(request: ExportRequest) -> dict:
-    async with EXPORT_LOCK:
+async def export_document(envelope: SignedExportRequest) -> dict:
+    validation_error = ticket_validation_error(
+        envelope.request,
+        envelope.expiresAt,
+        envelope.signature,
+        _expected_token(),
+        payload_key="request",
+    )
+    if validation_error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=validation_error,
+        )
+    async with EXPORT_GATE:
         try:
-            files = await asyncio.to_thread(render_export, request)
+            files = await asyncio.to_thread(render_export, envelope.request)
         except ValueError as error:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -304,6 +355,37 @@ async def export_document(request: ExportRequest) -> dict:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="文档生成服务暂时不可用",
+            ) from error
+    return {"success": True, "data": {"files": files}}
+
+
+@app.post("/cloze-export")
+async def cloze_export_document(envelope: SignedClozeExportRequest) -> dict:
+    validation_error = ticket_validation_error(
+        envelope.request,
+        envelope.expiresAt,
+        envelope.signature,
+        _expected_token(),
+        payload_key="request",
+    )
+    if validation_error:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=validation_error,
+        )
+    async with EXPORT_GATE:
+        try:
+            files = await asyncio.to_thread(render_cloze_export, envelope.request)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(error),
+            ) from error
+        except Exception as error:
+            LOGGER.exception("cloze document export failed")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="填空文档生成服务暂时不可用",
             ) from error
     return {"success": True, "data": {"files": files}}
 
@@ -325,6 +407,12 @@ def create_job(
 
 @app.post("/cloudbase/jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_cloudbase_job(request: SignedPdfJobRequest) -> dict:
+    schema_error = _ticket_schema_error(request.ticketSchemaVersion)
+    if schema_error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=schema_error,
+        )
     validation_error = ticket_validation_error(
         request.job,
         request.expiresAt,
@@ -348,6 +436,12 @@ def create_cloudbase_job(request: SignedPdfJobRequest) -> dict:
 
 @app.post("/cloudbase/image-jobs", status_code=status.HTTP_202_ACCEPTED)
 def create_cloudbase_image_job(request: SignedImageBatchJobRequest) -> dict:
+    schema_error = _ticket_schema_error(request.ticketSchemaVersion)
+    if schema_error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=schema_error,
+        )
     validation_error = ticket_validation_error(
         request.job,
         request.expiresAt,

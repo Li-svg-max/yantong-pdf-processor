@@ -308,10 +308,18 @@ class RapidOcrMarkerDetector:
     def __init__(self) -> None:
         try:
             from rapidocr_onnxruntime import RapidOCR
+            self._engine_api = "legacy"
         except Exception as error:
-            raise PdfProcessingError(
-                f"扫描版 PDF OCR 导入失败: {type(error).__name__}: {error}"
-            ) from error
+            try:
+                # rapidocr 1.x exposes the same ONNX models through a typed
+                # output object. Keep this fallback so a rebuilt container can
+                # use the current package without changing the pipeline.
+                from rapidocr import RapidOCR
+                self._engine_api = "modern"
+            except Exception:
+                raise PdfProcessingError(
+                    f"扫描版 PDF OCR 导入失败: {type(error).__name__}: {error}"
+                ) from error
         self._engine = RapidOCR()
         self._page_rows: dict[int, tuple[OcrRow, ...]] = {}
 
@@ -337,8 +345,8 @@ class RapidOcrMarkerDetector:
         derived from the page background instead of a fixed global cutoff.
         """
         source = image.convert("RGB")
-        if source.width < 1200:
-            scale = min(1.6, 1200 / max(1, source.width))
+        if source.width < 1600:
+            scale = min(1.45, 1600 / max(1, source.width))
             source = source.resize(
                 (max(16, round(source.width * scale)), max(16, round(source.height * scale))),
                 Image.Resampling.LANCZOS,
@@ -363,7 +371,20 @@ class RapidOcrMarkerDetector:
         variant: Image.Image,
         minimum_confidence: float = 0.25,
     ) -> list[OcrRow]:
-        result, _ = self._engine(np.asarray(variant))
+        output = self._engine(np.asarray(variant))
+        if self._engine_api == "modern":
+            boxes = getattr(output, "boxes", None)
+            texts = getattr(output, "txts", None)
+            scores = getattr(output, "scores", None)
+            result = list(
+                zip(
+                    [] if boxes is None else boxes,
+                    [] if texts is None else texts,
+                    [] if scores is None else scores,
+                )
+            )
+        else:
+            result, _ = output
         rows: list[OcrRow] = []
         width = max(1.0, float(variant.width))
         height = max(1.0, float(variant.height))
@@ -481,6 +502,27 @@ class RapidOcrMarkerDetector:
             "confidence": round(float(best["confidence"]), 4),
             "source": str(best["source"]),
         }
+
+    def extract_text_fast(self, question_image: Image.Image) -> dict[str, object]:
+        """Run the normal scan once, with a bounded fallback for hard pages.
+
+        Study-material imports are often several phone photos. Running four
+        enhancement variants for every page makes a batch feel stalled even
+        when the first OCR pass is already readable. Use the original image
+        first and only pay for the full variant search when the result is too
+        short or uncertain to be useful.
+        """
+        image = self._fit_width(question_image, max_width=1800)
+        rows = self._read_rows_from_variant(image)
+        if rows:
+            text, confidence = _rows_to_text(rows)
+            if len(text) >= 18 and confidence >= 0.55:
+                return {
+                    "text": text,
+                    "confidence": round(confidence, 4),
+                    "source": "rapidocr_fast",
+                }
+        return self.extract_text(image)
 
 
 def _contiguous_ranges(values: Sequence[int], max_gap: int = 1) -> list[tuple[int, int]]:

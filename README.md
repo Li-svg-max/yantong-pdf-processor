@@ -17,7 +17,9 @@
 
 `POST /export` 接收小程序排版设置与题组，生成真实 PDF 或 DOCX。支持 A4/A5、单栏/双栏、字号、题间距、答题留白、答案行内/文末，以及试题和答案解析分成两个文件。导出始终使用题目文字，不嵌入扫描原图或裁剪件。
 
-文档导出复用同一个 `pdf-processor` 服务，不需要新增云托管服务或额外环境变量。小程序通过 `wx.cloud.callContainer` 调用，生成后写入小程序用户文件目录并使用系统文档查看器打开。
+专业课资料使用独立流程：文字 PDF 直接提取全文，扫描 PDF 或照片使用 RapidOCR 识别整页文字，不要求存在题号。机器只生成保守的挖空建议，用户可以修改识别文字、关闭或删除建议、修改答案和增加自定义挖空。`POST /cloze-export` 生成先练习后答案的 DOCX，答案区包含编号和原文定位。
+
+文档导出复用同一个 `pdf-processor` 服务，不需要新增云托管服务。两类导出都必须携带 `privateMaterialApi` 签发的 5 分钟 HMAC 票据；专业课票据只从当前用户已核对保存的私人文档生成，客户端不能绕过核对直接替换内容。生成后文件写入小程序用户文件目录，并使用系统文档查看器打开。
 
 ## 云托管部署
 
@@ -40,9 +42,11 @@ TENCENT_SECRET_ID=仅具备该存储桶读写权限的密钥ID
 TENCENT_SECRET_KEY=对应密钥
 PROCESSOR_DATA_DIR=/data
 MAX_PROCESS_ATTEMPTS=3
+QUEUE_POLL_INTERVAL=1
+MAX_CONCURRENT_EXPORTS=2
 ```
 
-不要把腾讯云密钥或 `YANTONG_PROCESSOR_TOKEN` 写入小程序代码。COS 密钥应使用最小权限子账号，只允许读取 `private/*/imports/*` 和写入 `private/*/questions/*`。
+`MAX_CONCURRENT_EXPORTS` 建议保持为 `2`，允许两份文档并行生成，同时控制 2 核 4GB 实例的内存压力。不要把腾讯云密钥或 `YANTONG_PROCESSOR_TOKEN` 写入小程序代码。COS 密钥应使用最小权限子账号，只允许读取 `private/*/imports/*` 和写入 `private/*/questions/*`。
 
 ## 回调配置
 
@@ -60,7 +64,7 @@ MAX_PROCESS_ATTEMPTS=3
 YANTONG_PROCESSOR_TOKEN=与容器完全相同的密钥
 ```
 
-重新部署 `privateMaterialApi`。PDF 上传完成后，云函数生成 5 分钟有效的 HMAC 签名任务票据，小程序通过 `wx.cloud.callContainer` 向 `pdf-processor/cloudbase/jobs` 投递。永久密钥不会进入小程序。容器完成处理后调用 `PRIVATE_MATERIAL_CALLBACK_URL` 分批回写，每批最多 100 个题组。
+重新部署 `privateMaterialApi`。PDF/照片上传完成后，云函数生成 5 分钟有效的 HMAC 签名任务票据，小程序通过 `wx.cloud.callContainer` 向 `pdf-processor/cloudbase/jobs` 或 `cloudbase/image-jobs` 投递。生成 PDF/Word 时也会使用短时票据，永久密钥不会进入小程序。容器完成处理后调用 `PRIVATE_MATERIAL_CALLBACK_URL` 回写私人题组或私人专业课文档。
 
 在云函数配置中将 `privateMaterialApi` 的执行超时设为至少 10 秒。实际任务只在容器中运行，云函数只负责数据库写入和不超过 1.2 秒的任务投递。
 
