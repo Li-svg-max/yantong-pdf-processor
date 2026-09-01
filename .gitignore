@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+data/
+auth/
+config.yaml
+management-key.txt
