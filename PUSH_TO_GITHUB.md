@@ -14,7 +14,7 @@ if (!(Test-Path -LiteralPath (Join-Path $service ".git"))) {
 }
 
 & $git switch -C cli-proxy-cloud
-& $git add Dockerfile docker-entrypoint.sh .dockerignore .gitignore .env.example README.md test-deployment-files.js PUSH_TO_GITHUB.md
+& $git add Dockerfile docker-entrypoint.sh .dockerignore .gitignore .env.example README.md test-deployment-files.js PUSH_TO_GITHUB.md Copy-CodexOAuthSecret.ps1
 & $git diff --cached --check
 & $git commit -m "Add CloudBase CLIProxyAPI service"
 
@@ -27,7 +27,7 @@ $env:GIT_SSH_COMMAND = "ssh -p 443"
 & $git push -u origin cli-proxy-cloud
 ```
 
-推送前确认暂存区只包含本目录列出的 8 个部署文件。不要把 `.env`、`auth`、`config.yaml`、OAuth JSON、API Key 或其他凭证放进这个目录。
+推送前确认暂存区只包含本目录列出的部署文件。不要把 `.env`、`auth`、`config.yaml`、OAuth JSON、API Key 或其他凭证放进这个目录。
 
 CloudBase 从该仓库部署时选择：
 
