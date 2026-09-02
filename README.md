@@ -50,15 +50,15 @@ It never packages OAuth credentials in the image or Git repository. For private 
 
 The cloud container cannot read the `auth` directory on your computer. To inject the existing login without uploading a token file to GitHub:
 
-1. Stop the local CLIProxyAPI service before copying its credential. In PowerShell, run:
+1. Stop the local CLIProxyAPI service before copying its credential. In PowerShell, run the included helper. It copies the encoded credential directly to the clipboard without printing it:
 
    ```powershell
-   $authFile = Get-ChildItem "C:\Users\16950\Desktop\研通\services\CLIProxyAPI-v7.2.144\auth" -Filter "codex-*.json" | Select-Object -First 1
-   [Convert]::ToBase64String([IO.File]::ReadAllBytes($authFile.FullName))
+   cd "C:\Users\16950\Desktop\研通\services\cli-proxy-cloud"
+   .\Copy-CodexOAuthSecret.ps1
    ```
 
-2. Copy the single output value. Do not send it in chat, paste it into Git, or put it in a screenshot.
-3. In CloudBase, open `云托管 -> cli-proxy-api -> 配置 -> 环境变量`, add `CLI_PROXY_AUTH_JSON_B64`, paste the value, and set `CLI_PROXY_AUTH_VERSION` to a unique value such as `2026-09-02-1`. Mark the variable as sensitive/encrypted if the console offers that option. Keep `CLI_PROXY_API_KEY` configured. Remove all three `UPSTREAM_*` variables for this OAuth mode.
+2. Do not send the clipboard value in chat, paste it into Git, or put it in a screenshot.
+3. In CloudBase, open `云托管 -> cli-proxy-api -> 配置 -> 环境变量`, add `CLI_PROXY_AUTH_JSON_B64`, paste the clipboard value, and set `CLI_PROXY_AUTH_VERSION` to a unique value such as `2026-09-02-1`. Mark the variable as sensitive/encrypted if the console offers that option. Keep `CLI_PROXY_API_KEY` configured. Remove all three `UPSTREAM_*` variables for this OAuth mode.
 4. Make sure `/data` is mounted as a persistent volume, then redeploy/restart the service.
 5. Test `/v1/models` with the proxy key. A Codex model should be listed. If it is listed, set the mini-program `aiApi` variables to the cloud service URL and the same proxy key.
 

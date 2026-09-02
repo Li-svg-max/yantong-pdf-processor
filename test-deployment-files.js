@@ -24,5 +24,6 @@ assert(entrypoint.includes("chmod 0600"));
 assert(readme.includes("YANTONG_AI_PROVIDER_URL"));
 assert(readme.includes("CLI_PROXY_AUTH_JSON_B64"));
 assert(fs.existsSync(path.join(root, ".env.example")));
+assert(fs.existsSync(path.join(root, "Copy-CodexOAuthSecret.ps1")));
 
 console.log("CLIProxyAPI CloudBase deployment files verified.");
