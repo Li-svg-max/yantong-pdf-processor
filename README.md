@@ -2,7 +2,7 @@
 
 This is a CloudBase container deployment for `CLIProxyAPI` v7.2.144. It downloads the official Linux amd64 release during image build and verifies its SHA-256 before it is used.
 
-It intentionally does **not** package any ChatGPT Plus/Codex OAuth credentials. For a cloud service, configure an API provider that explicitly allows programmatic and server-side use in the chosen deployment region.
+It never packages OAuth credentials in the image or Git repository. For private testing, one Codex OAuth JSON file can be injected at deploy time through the encrypted `CLI_PROXY_AUTH_JSON_B64` environment variable. Do not use a personal ChatGPT Plus credential for a public or multi-user service without confirming that the account and service terms permit it.
 
 ## CloudBase setup
 
@@ -10,7 +10,7 @@ It intentionally does **not** package any ChatGPT Plus/Codex OAuth credentials. 
 2. In CloudBase, open the environment and choose `云托管` -> `新建服务`.
 3. Use service name `cli-proxy-api`, deploy from the repository branch, and set the source directory to this directory if CloudBase asks for it.
 4. Set container port to `8080`, then configure the environment variables listed in `.env.example`.
-5. Mount a persistent volume at `/data` if credentials or local state must survive a container replacement. This deployment does not need OAuth files.
+5. Mount a persistent volume at `/data` so the generated config and OAuth state survive a container replacement.
 6. Deploy. In the service details page, enable `HTTP 访问服务` / public HTTPS access. CloudBase then shows an address similar to:
 
    ```text
@@ -39,10 +39,30 @@ It intentionally does **not** package any ChatGPT Plus/Codex OAuth credentials. 
 | Name | Purpose |
 | --- | --- |
 | `CLI_PROXY_API_KEY` | Key accepted by this proxy. Generate a new random value; do not reuse the previously exposed local key. |
+| `CLI_PROXY_AUTH_JSON_B64` | Optional sensitive environment variable containing the Base64 text of one local Codex OAuth JSON file. Base64 is encoding, not encryption. The container restores it as `/data/auth/codex-oauth.json`; never commit this value. |
+| `CLI_PROXY_AUTH_VERSION` | Version marker for the injected credential, e.g. `2026-09-02-1`. Change it only when replacing the OAuth JSON; otherwise refreshed tokens in `/data/auth` are preserved. |
 | `UPSTREAM_BASE_URL` | HTTPS base URL supplied by your authorized OpenAI-compatible provider. |
 | `UPSTREAM_API_KEY` | Provider-issued API key. |
 | `UPSTREAM_MODEL` | Upstream model identifier. It must support image input for question recognition. |
 | `UPSTREAM_MODEL_ALIAS` | Optional alias returned by `/v1/models`, e.g. `gpt-5.4`. |
+
+## Injecting the local Codex login for private testing
+
+The cloud container cannot read the `auth` directory on your computer. To inject the existing login without uploading a token file to GitHub:
+
+1. Stop the local CLIProxyAPI service before copying its credential. In PowerShell, run:
+
+   ```powershell
+   $authFile = Get-ChildItem "C:\Users\16950\Desktop\研通\services\CLIProxyAPI-v7.2.144\auth" -Filter "codex-*.json" | Select-Object -First 1
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes($authFile.FullName))
+   ```
+
+2. Copy the single output value. Do not send it in chat, paste it into Git, or put it in a screenshot.
+3. In CloudBase, open `云托管 -> cli-proxy-api -> 配置 -> 环境变量`, add `CLI_PROXY_AUTH_JSON_B64`, paste the value, and set `CLI_PROXY_AUTH_VERSION` to a unique value such as `2026-09-02-1`. Mark the variable as sensitive/encrypted if the console offers that option. Keep `CLI_PROXY_API_KEY` configured. Remove all three `UPSTREAM_*` variables for this OAuth mode.
+4. Make sure `/data` is mounted as a persistent volume, then redeploy/restart the service.
+5. Test `/v1/models` with the proxy key. A Codex model should be listed. If it is listed, set the mini-program `aiApi` variables to the cloud service URL and the same proxy key.
+
+The access token may expire and the refresh token may stop working. If the service later reports an expired or invalid account, repeat the local login, generate a new Base64 value, and change `CLI_PROXY_AUTH_VERSION` before redeploying. Do not expose the JSON file.
 
 ## Local build check
 

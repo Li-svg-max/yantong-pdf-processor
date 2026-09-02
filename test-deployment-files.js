@@ -17,8 +17,12 @@ assert(entrypoint.includes('host: "0.0.0.0"'));
 assert(entrypoint.includes("CLI_PROXY_API_KEY is required"));
 assert(entrypoint.includes("UPSTREAM_BASE_URL must use HTTPS"));
 assert(entrypoint.includes("disable-control-panel: true"));
-assert(!entrypoint.includes("codex-login"));
+assert(entrypoint.includes("CLI_PROXY_AUTH_JSON_B64"));
+assert(entrypoint.includes("CLI_PROXY_AUTH_VERSION"));
+assert(entrypoint.includes("codex-oauth.json"));
+assert(entrypoint.includes("chmod 0600"));
 assert(readme.includes("YANTONG_AI_PROVIDER_URL"));
+assert(readme.includes("CLI_PROXY_AUTH_JSON_B64"));
 assert(fs.existsSync(path.join(root, ".env.example")));
 
 console.log("CLIProxyAPI CloudBase deployment files verified.");
