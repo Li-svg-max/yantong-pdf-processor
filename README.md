@@ -57,6 +57,8 @@ The cloud container cannot read the `auth` directory on your computer. To inject
    .\Copy-CodexOAuthSecret.ps1
    ```
 
+   The helper locates the sibling `CLIProxyAPI-v7.2.144\auth` directory automatically, so it is not affected by Chinese Windows path encoding. If your local CLIProxyAPI is stored elsewhere, pass its `auth` directory explicitly with `-AuthDirectory`.
+
 2. Do not send the clipboard value in chat, paste it into Git, or put it in a screenshot.
 3. In CloudBase, open `云托管 -> cli-proxy-api -> 配置 -> 环境变量`, add `CLI_PROXY_AUTH_JSON_B64`, paste the clipboard value, and set `CLI_PROXY_AUTH_VERSION` to a unique value such as `2026-09-02-1`. Mark the variable as sensitive/encrypted if the console offers that option. Keep `CLI_PROXY_API_KEY` configured. Remove all three `UPSTREAM_*` variables for this OAuth mode.
 4. Make sure `/data` is mounted as a persistent volume, then redeploy/restart the service.

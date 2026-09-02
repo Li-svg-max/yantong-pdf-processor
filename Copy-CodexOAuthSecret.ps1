@@ -1,9 +1,11 @@
 [CmdletBinding()]
 param(
-  [string]$AuthDirectory = "C:\Users\16950\Desktop\研通\services\CLIProxyAPI-v7.2.144\auth"
+  [string]$AuthDirectory = (Join-Path $PSScriptRoot "..\CLIProxyAPI-v7.2.144\auth")
 )
 
 $ErrorActionPreference = "Stop"
+
+$AuthDirectory = [IO.Path]::GetFullPath($AuthDirectory)
 
 $authFile = Get-ChildItem -LiteralPath $AuthDirectory -Filter "codex-*.json" -File |
   Sort-Object LastWriteTime -Descending |
