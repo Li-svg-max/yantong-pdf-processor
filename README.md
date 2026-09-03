@@ -31,7 +31,7 @@ It never packages OAuth credentials in the image or Git repository. For private 
    YANTONG_AI_PROVIDER_URL=https://YOUR_SERVICE_DOMAIN/v1
    YANTONG_AI_PROVIDER_KEY=<CLI_PROXY_API_KEY>
    YANTONG_AI_PROVIDER_MODEL=<UPSTREAM_MODEL_ALIAS>
-   YANTONG_AI_TIMEOUT_MS=25000
+   YANTONG_AI_TIMEOUT_MS=50000
    ```
 
 ## Required CloudBase variables
