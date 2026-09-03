@@ -15,6 +15,13 @@ if [ -z "${CLI_PROXY_API_KEY:-}" ]; then
   exit 64
 fi
 
+if [ -n "${CLI_PROXY_OUTBOUND_PROXY:-}" ]; then
+  case "${CLI_PROXY_OUTBOUND_PROXY}" in
+    http://*|https://*|socks5://*|socks5h://*) ;;
+    *) echo "CLI_PROXY_OUTBOUND_PROXY must use http, https, socks5 or socks5h" >&2; exit 64 ;;
+  esac
+fi
+
 if [ -n "${UPSTREAM_BASE_URL:-}" ] || [ -n "${UPSTREAM_API_KEY:-}" ] || [ -n "${UPSTREAM_MODEL:-}" ]; then
   if [ -z "${UPSTREAM_BASE_URL:-}" ] || [ -z "${UPSTREAM_API_KEY:-}" ] || [ -z "${UPSTREAM_MODEL:-}" ]; then
     echo "UPSTREAM_BASE_URL, UPSTREAM_API_KEY and UPSTREAM_MODEL must be set together" >&2
@@ -86,6 +93,12 @@ api-keys:
   - "$(yaml_quote "${CLI_PROXY_API_KEY}")"
 debug: false
 EOF
+
+if [ -n "${CLI_PROXY_OUTBOUND_PROXY:-}" ]; then
+  cat >> "${CONFIG_FILE}" <<EOF
+proxy-url: "$(yaml_quote "${CLI_PROXY_OUTBOUND_PROXY}")"
+EOF
+fi
 
 if [ -n "${UPSTREAM_BASE_URL:-}" ]; then
   alias_name="${UPSTREAM_MODEL_ALIAS:-${UPSTREAM_MODEL}}"

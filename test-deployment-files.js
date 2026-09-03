@@ -19,10 +19,13 @@ assert(entrypoint.includes("UPSTREAM_BASE_URL must use HTTPS"));
 assert(entrypoint.includes("disable-control-panel: true"));
 assert(entrypoint.includes("CLI_PROXY_AUTH_JSON_B64"));
 assert(entrypoint.includes("CLI_PROXY_AUTH_VERSION"));
+assert(entrypoint.includes("CLI_PROXY_OUTBOUND_PROXY"));
+assert(entrypoint.includes("proxy-url:"));
 assert(entrypoint.includes("codex-oauth.json"));
 assert(entrypoint.includes("chmod 0600"));
 assert(readme.includes("YANTONG_AI_PROVIDER_URL"));
 assert(readme.includes("CLI_PROXY_AUTH_JSON_B64"));
+assert(readme.includes("chatgpt.com ... connect: connection refused"));
 assert(fs.existsSync(path.join(root, ".env.example")));
 assert(fs.existsSync(path.join(root, "Copy-CodexOAuthSecret.ps1")));
 

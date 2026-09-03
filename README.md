@@ -41,6 +41,7 @@ It never packages OAuth credentials in the image or Git repository. For private 
 | `CLI_PROXY_API_KEY` | Key accepted by this proxy. Generate a new random value; do not reuse the previously exposed local key. |
 | `CLI_PROXY_AUTH_JSON_B64` | Optional sensitive environment variable containing the Base64 text of one local Codex OAuth JSON file. Base64 is encoding, not encryption. The container restores it as `/data/auth/codex-oauth.json`; never commit this value. |
 | `CLI_PROXY_AUTH_VERSION` | Version marker for the injected credential, e.g. `2026-09-02-1`. Change it only when replacing the OAuth JSON; otherwise refreshed tokens in `/data/auth` are preserved. |
+| `CLI_PROXY_OUTBOUND_PROXY` | Optional global outbound proxy (`http`, `https`, `socks5`, or `socks5h`). Required if the container region cannot connect to `chatgpt.com`; treat credentials in the URL as a secret. |
 | `UPSTREAM_BASE_URL` | HTTPS base URL supplied by your authorized OpenAI-compatible provider. |
 | `UPSTREAM_API_KEY` | Provider-issued API key. |
 | `UPSTREAM_MODEL` | Upstream model identifier. It must support image input for question recognition. |
@@ -65,6 +66,10 @@ The cloud container cannot read the `auth` directory on your computer. To inject
 5. Test `/v1/models` with the proxy key. A Codex model should be listed. If it is listed, set the mini-program `aiApi` variables to the cloud service URL and the same proxy key.
 
 The access token may expire and the refresh token may stop working. If the service later reports an expired or invalid account, repeat the local login, generate a new Base64 value, and change `CLI_PROXY_AUTH_VERSION` before redeploying. Do not expose the JSON file.
+
+### Mainland China deployment note
+
+`GET /v1/models` only proves that the OAuth file was loaded; it does not prove that the container can reach the model. Always send one small `/v1/chat/completions` request. If it fails with `chatgpt.com ... connect: connection refused`, the deployment region has no usable route to the upstream service. Either set `CLI_PROXY_OUTBOUND_PROXY` to a stable, authorized outbound proxy or deploy this private proxy service in an overseas region that can reach the upstream. A localhost proxy on the developer computer is not reachable from CloudBase.
 
 ## Local build check
 
