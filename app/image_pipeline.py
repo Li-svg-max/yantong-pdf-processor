@@ -60,7 +60,11 @@ def process_image_batch(
                 recognized_text=recognized_text,
                 text_source=text_source,
                 text_confidence=confidence,
-                image_paths=(),
+                # Keep the private source path in-memory until the worker has
+                # finished optional vision-model correction. The cloud client
+                # still reuses the already uploaded source file and does not
+                # upload it a second time.
+                image_paths=(source_path,),
                 source_pages=(),
                 detection_source="image_batch",
                 image_quality=analyze_image_quality(image),

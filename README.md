@@ -1,12 +1,15 @@
 # 研通 PDF 题目裁剪服务
 
-该服务处理 `privateMaterialApi` 投递的私人 PDF：下载原件、定位题号、按相邻题号纵向裁剪、全文 OCR、保留内部裁剪件，并把“题号 + OCR 文字”回写到私人题库。服务同时提供小程序排版页使用的 PDF/Word 文档导出接口。
+该服务处理 `privateMaterialApi` 投递的私人 PDF：下载原件、定位题号、按相邻题号纵向裁剪、生成 RapidOCR 草稿，再使用与小程序拍照识题相同的结构化视觉模型逐题校对题干、分项命题、选项和公式。服务保留内部裁剪件，并把可编辑的文字题目回写到私人题库，同时提供 PDF/Word 文档导出接口。
 
 ## 处理原则
 
 - 有文字层的 PDF 直接读取文字坐标，不做 OCR；
 - 扫描 PDF 先对页面左侧区域运行 RapidOCR 定位题号，再对每个完整裁剪区域执行全文 OCR；
-- 全文 OCR 会比较原彩图、增强灰度图和抑制蓝绿手写笔迹后的图，选择较优结果；
+- 全文 OCR 会比较原彩图、增强灰度图和抑制蓝绿手写笔迹后的图，选择较优草稿；
+- 配置 `DEEPSEEK_API_KEY` 后，每道裁剪图继续进入结构化视觉校对；图片是事实来源，RapidOCR 草稿只作比对；
+- 视觉校对会去除重复题干和重复选项，重点复核导数撇号、上下标、极限、积分、分式、矩阵和正负号；
+- 单题视觉校对失败只回退该题的 RapidOCR 草稿，不会导致整份 PDF 失败；
 - OCR 文字用于题目总览、详情、搜索、排版和知识点初筛，低置信度或有墨迹风险时标记为待核对；
 - 裁剪件仅保留在后台用于重新识别、质量追溯和安全删除，不会在小程序详情、排版页或导出文件中展示；
 - 保持每页完整横向宽度，只改变题目图片的纵向边界；
@@ -44,9 +47,15 @@ PROCESSOR_DATA_DIR=/data
 MAX_PROCESS_ATTEMPTS=3
 QUEUE_POLL_INTERVAL=1
 MAX_CONCURRENT_EXPORTS=2
+DEEPSEEK_API_KEY=DeepSeek开放平台密钥
+PDF_AI_OCR_MODE=all
+PDF_AI_OCR_CONCURRENCY=2
+PDF_AI_OCR_TIMEOUT_SECONDS=35
 ```
 
 `MAX_CONCURRENT_EXPORTS` 建议保持为 `2`，允许两份文档并行生成，同时控制 2 核 4GB 实例的内存压力。不要把腾讯云密钥或 `YANTONG_PROCESSOR_TOKEN` 写入小程序代码。COS 密钥应使用最小权限子账号，只允许读取 `private/*/imports/*` 和写入 `private/*/questions/*`。
+
+`DEEPSEEK_API_KEY` 应与 `aiApi` 使用同一账户下的有效密钥，但必须分别配置在两个服务的环境变量中。可选覆盖项为 `DEEPSEEK_BASE_URL` 和 `DEEPSEEK_VISION_MODEL`；默认分别为 `https://api.deepseek.com/v1` 与 `deepseek-v4-flash-vision-exp`。将 `PDF_AI_OCR_MODE` 设为 `rapidocr` 可紧急关闭视觉校对。2 核实例建议并发保持 `2`，过高会增加超时和内存压力。
 
 ## 回调配置
 
@@ -90,7 +99,7 @@ Invoke-RestMethod "https://PDF处理服务公网域名/health"
 
 如果 `ok` 为 `false`，`missing` 会列出尚未配置的环境变量名称，但不会返回任何密钥内容。
 
-公网健康地址不是原生调用的必需条件。随后在小程序上传一份 PDF，处理记录应依次出现“已提交文字识别”和“可选题”。失败三次后会显示“文字识别失败”和具体原因，可点击“重试”重新生成票据并投递原文件。
+公网健康地址不是原生调用的必需条件。随后在小程序上传一份 PDF，处理记录应依次出现“正在生成 OCR 草稿”“AI 正在校对题干与公式”和“可选题”。失败三次后会显示“文字识别失败”和具体原因，可点击“重试”重新生成票据并投递原文件。
 
 ## 本地测试
 

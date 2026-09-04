@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
@@ -79,6 +79,7 @@ class ProcessedQuestion:
     source_pages: tuple[int, ...]
     detection_source: str
     image_quality: dict[str, object]
+    recognition_metrics: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -372,7 +373,10 @@ class RapidOcrMarkerDetector:
         minimum_confidence: float = 0.25,
     ) -> list[OcrRow]:
         output = self._engine(np.asarray(variant))
-        if self._engine_api == "modern":
+        # Test doubles and older persisted worker instances do not necessarily
+        # carry the API marker. RapidOCR's tuple response is the safe legacy
+        # default in that case.
+        if getattr(self, "_engine_api", "legacy") == "modern":
             boxes = getattr(output, "boxes", None)
             texts = getattr(output, "txts", None)
             scores = getattr(output, "scores", None)

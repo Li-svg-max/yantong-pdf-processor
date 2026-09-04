@@ -125,6 +125,7 @@ def _process_task(task: StoredTask) -> None:
     from .image_pipeline import process_image_batch
     from .pdf_pipeline import PipelineOptions, process_pdf
     from .study_material_pipeline import process_study_images, process_study_pdf
+    from .vision_ocr import VisionOcrSettings, enhance_questions_with_vision
 
     workspace = DATA_DIR / "work" / task.job_id
     if workspace.exists():
@@ -169,9 +170,19 @@ def _process_task(task: StoredTask) -> None:
                 questions = process_image_batch(
                     image_sources,
                     progress_callback=lambda done, total: report(
-                        15 + round(done / max(1, total) * 70), "正在识别文字"
+                        15 + round(done / max(1, total) * 35), "正在生成 OCR 草稿"
                     ),
                 )
+                vision_settings = VisionOcrSettings.from_environment()
+                if vision_settings.enabled:
+                    questions = enhance_questions_with_vision(
+                        questions,
+                        job.subjectName,
+                        settings=vision_settings,
+                        progress_callback=lambda done, total: report(
+                            50 + round(done / max(1, total) * 35), "AI 正在校对题干与公式"
+                        ),
+                    )
             report(88, "正在保存识别结果")
             progress_reporter.close()
             if job.workflowType == "cloze_document":
@@ -188,7 +199,7 @@ def _process_task(task: StoredTask) -> None:
                 if phase in {"正在识别题号", "正在定位题号区域", "题号已定位"}:
                     report(15 + round(ratio * 20), phase or "正在识别题号")
                 else:
-                    report(35 + round(ratio * 47), phase or "正在整理题目文字")
+                    report(35 + round(ratio * 25), phase or "正在生成 OCR 草稿")
 
             report(8, "正在下载 PDF")
             cloud_client.download_source(job, input_path)
@@ -211,6 +222,16 @@ def _process_task(task: StoredTask) -> None:
                     ),
                     progress_callback=report_pdf_progress,
                 )
+                vision_settings = VisionOcrSettings.from_environment()
+                if vision_settings.enabled:
+                    questions = enhance_questions_with_vision(
+                        questions,
+                        job.subjectName,
+                        settings=vision_settings,
+                        progress_callback=lambda done, total: report(
+                            60 + round(done / max(1, total) * 27), "AI 正在校对题干与公式"
+                        ),
+                    )
             if job.workflowType == "cloze_document":
                 report(92, "正在保存识别结果")
                 progress_reporter.close()
@@ -296,7 +317,10 @@ def cloudbase_probe() -> dict:
 
 @app.get("/health")
 def health() -> dict:
+    from .vision_ocr import VisionOcrSettings
+
     settings = CloudSettings.from_environment()
+    vision_settings = VisionOcrSettings.from_environment()
     required = {
         "YANTONG_PROCESSOR_TOKEN": settings.processor_token,
     }
@@ -324,6 +348,13 @@ def health() -> dict:
             "configuredBucket": settings.cos_bucket,
             "region": settings.cos_region,
             "fileIdBucketResolution": "embedded-host-first",
+        },
+        "recognition": {
+            "pipeline": "rapidocr-plus-structured-vision",
+            "visionEnabled": vision_settings.enabled,
+            "visionModel": vision_settings.model if vision_settings.enabled else "",
+            "mode": vision_settings.mode,
+            "concurrency": vision_settings.max_workers,
         },
     }
 

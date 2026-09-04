@@ -182,6 +182,7 @@ class CloudClient:
             self._build_group(job, question, uploaded_images[index], index)
             for index, question in enumerate(questions)
         ]
+        processing_metrics = self._aggregate_recognition_metrics(questions)
         for offset in range(0, len(groups), 100):
             batch = groups[offset : offset + 100]
             complete = offset + len(batch) >= len(groups)
@@ -201,6 +202,7 @@ class CloudClient:
                     "jobId": job.jobId,
                     "complete": complete,
                     "progress": progress,
+                    "processingMetrics": processing_metrics,
                     "questionGroups": batch,
                 }
             )
@@ -224,6 +226,7 @@ class CloudClient:
             )
             for index, question in enumerate(questions)
         ]
+        processing_metrics = self._aggregate_recognition_metrics(questions)
         for offset in range(0, len(groups), 100):
             batch = groups[offset : offset + 100]
             complete = offset + len(batch) >= len(groups)
@@ -235,6 +238,7 @@ class CloudClient:
                     "jobId": job.jobId,
                     "complete": complete,
                     "progress": progress,
+                    "processingMetrics": processing_metrics,
                     "questionGroups": batch,
                 }
             )
@@ -305,6 +309,31 @@ class CloudClient:
         if result.get("success") is not True:
             raise CloudClientError(result.get("message") or "回写私人题库失败")
         return result
+
+    @staticmethod
+    def _aggregate_recognition_metrics(questions: list[ProcessedQuestion]) -> dict:
+        metrics = [
+            question.recognition_metrics
+            for question in questions
+            if isinstance(question.recognition_metrics, dict)
+            and question.recognition_metrics.get("provider")
+        ]
+        providers = sorted({str(item.get("provider") or "") for item in metrics if item.get("provider")})
+        models = sorted({str(item.get("model") or "") for item in metrics if item.get("model")})
+        return {
+            "pipeline": "pdf-image-vision-v1",
+            "providers": providers,
+            "models": models,
+            "calls": len(metrics),
+            "successfulCalls": sum(1 for item in metrics if item.get("status") == "success"),
+            "failedCalls": sum(1 for item in metrics if item.get("status") == "failed"),
+            "inputTokens": sum(int(item.get("inputTokens") or 0) for item in metrics),
+            "outputTokens": sum(int(item.get("outputTokens") or 0) for item in metrics),
+            "totalTokens": sum(int(item.get("totalTokens") or 0) for item in metrics),
+            "cacheHitTokens": sum(int(item.get("cacheHitTokens") or 0) for item in metrics),
+            "cacheMissTokens": sum(int(item.get("cacheMissTokens") or 0) for item in metrics),
+            "durationMs": sum(int(item.get("durationMs") or 0) for item in metrics),
+        }
 
     @staticmethod
     def _build_group(
@@ -396,6 +425,7 @@ class CloudClient:
             ),
             "recognizedTextSource": question.text_source,
             "recognizedTextConfidence": round(question.text_confidence, 4),
+            "recognitionMetrics": question.recognition_metrics,
             "detectionSource": question.detection_source,
             "imageQuality": question.image_quality,
             "requiresVisualReview": requires_visual_review,
