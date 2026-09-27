@@ -31,6 +31,18 @@ class SignedPdfJobRequest(BaseModel):
     ticketSchemaVersion: str | None = Field(default=None, max_length=80)
 
 
+class WordJobRequest(PdfJobRequest):
+    inputKind: Literal['docx']
+    workflowType: Literal['cloze_document']
+
+
+class SignedWordJobRequest(BaseModel):
+    job: WordJobRequest
+    expiresAt: int
+    signature: str = Field(min_length=64, max_length=64)
+    ticketSchemaVersion: str | None = Field(default=None, max_length=80)
+
+
 class ImageSource(BaseModel):
     sourceFileID: str = Field(min_length=1, max_length=1000)
     numberLabel: str = Field(min_length=1, max_length=20)

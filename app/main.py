@@ -20,6 +20,7 @@ from .models import (
     PdfJobRequest,
     SignedImageBatchJobRequest,
     SignedPdfJobRequest,
+    SignedWordJobRequest,
     model_to_dict,
 )
 from .queue_store import QueueStore, StoredTask
@@ -126,6 +127,8 @@ def _process_task(task: StoredTask) -> None:
     from .pdf_pipeline import PipelineOptions, process_pdf
     from .study_material_pipeline import process_study_images, process_study_pdf
     from .vision_ocr import VisionOcrSettings, enhance_questions_with_vision
+    from .word_material import process_study_word
+    from .models import WordJobRequest
 
     workspace = DATA_DIR / "work" / task.job_id
     if workspace.exists():
@@ -149,7 +152,20 @@ def _process_task(task: StoredTask) -> None:
         last_reported_status = status_text
 
     try:
-        if task.payload.get("inputKind") == "image_batch":
+        vision_settings = VisionOcrSettings.from_environment()
+        if task.payload.get("workflowType") != "cloze_document" and vision_settings.configuration_error:
+            raise RuntimeError(vision_settings.configuration_error)
+        if task.payload.get("inputKind") == "docx":
+            job = WordJobRequest(**task.payload)
+            input_path = workspace / 'source.docx'
+            report(8, '正在下载 Word')
+            cloud_client.download_source(job, input_path)
+            report(20, '正在读取 Word 正文和表格')
+            blocks = process_study_word(input_path)
+            report(92, '正在保存识别结果')
+            progress_reporter.close()
+            cloud_client.complete_cloze_job(job, blocks)
+        elif task.payload.get("inputKind") == "image_batch":
             job = ImageBatchJobRequest(**task.payload)
             image_sources = []
             report(8, "正在下载题目图片")
@@ -173,7 +189,6 @@ def _process_task(task: StoredTask) -> None:
                         15 + round(done / max(1, total) * 35), "正在生成 OCR 草稿"
                     ),
                 )
-                vision_settings = VisionOcrSettings.from_environment()
                 if vision_settings.enabled:
                     questions = enhance_questions_with_vision(
                         questions,
@@ -222,7 +237,6 @@ def _process_task(task: StoredTask) -> None:
                     ),
                     progress_callback=report_pdf_progress,
                 )
-                vision_settings = VisionOcrSettings.from_environment()
                 if vision_settings.enabled:
                     questions = enhance_questions_with_vision(
                         questions,
@@ -335,8 +349,10 @@ def health() -> dict:
             }
         )
     missing = [name for name, value in required.items() if not value]
+    if vision_settings.requested and not vision_settings.api_key:
+        missing.append("DEEPSEEK_API_KEY")
     return {
-        "ok": not missing,
+        "ok": not missing and not vision_settings.configuration_error,
         "service": "yantong-pdf-processor",
         "documentExportFormats": ["pdf", "docx"],
         "queue": QUEUE.counts(),
@@ -352,6 +368,7 @@ def health() -> dict:
         "recognition": {
             "pipeline": "rapidocr-plus-structured-vision",
             "visionEnabled": vision_settings.enabled,
+            "configurationError": vision_settings.configuration_error,
             "visionModel": vision_settings.model if vision_settings.enabled else "",
             "mode": vision_settings.mode,
             "concurrency": vision_settings.max_workers,
@@ -463,6 +480,12 @@ def create_cloudbase_job(request: SignedPdfJobRequest) -> dict:
         "jobId": request.job.jobId,
         "status": current["status"] if current else "queued",
     }
+
+
+@app.post('/cloudbase/word-jobs', status_code=status.HTTP_202_ACCEPTED)
+def create_cloudbase_word_job(request: SignedWordJobRequest) -> dict:
+    # Same signature, ownership-bound payload and idempotent queue as PDF.
+    return create_cloudbase_job(request)
 
 
 @app.post("/cloudbase/image-jobs", status_code=status.HTTP_202_ACCEPTED)

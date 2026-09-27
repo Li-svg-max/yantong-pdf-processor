@@ -324,9 +324,15 @@ class CloudClient:
             "pipeline": "pdf-image-vision-v1",
             "providers": providers,
             "models": models,
-            "calls": len(metrics),
-            "successfulCalls": sum(1 for item in metrics if item.get("status") == "success"),
-            "failedCalls": sum(1 for item in metrics if item.get("status") == "failed"),
+            "calls": sum(max(1, int(item.get("calls") or 1)) for item in metrics),
+            "successfulCalls": sum(
+                int(item.get("successfulCalls", max(1, int(item.get("calls") or 1)) if item.get("status") == "success" else 0))
+                for item in metrics
+            ),
+            "failedCalls": sum(
+                int(item.get("failedCalls", max(1, int(item.get("calls") or 1)) if item.get("status") == "failed" else 0))
+                for item in metrics
+            ),
             "inputTokens": sum(int(item.get("inputTokens") or 0) for item in metrics),
             "outputTokens": sum(int(item.get("outputTokens") or 0) for item in metrics),
             "totalTokens": sum(int(item.get("totalTokens") or 0) for item in metrics),
@@ -350,9 +356,11 @@ class CloudClient:
         machine_text = question.text_source not in {"pdf_text_index", "number_summary"}
         text_requires_review = machine_text and question.text_confidence < 0.88
         compact_text = re.sub(r"\s+", "", recognized_text)
+        latex_text = recognized_text if "$" in recognized_text else ""
         summary_compact = re.sub(r"\s+", "", summary)
         text_incomplete = (
             question.text_source in {"number_summary", "ocr_unavailable"}
+            or bool((question.recognition_metrics or {}).get("incomplete"))
             or len(compact_text) < 8
             or compact_text == summary_compact
         )
@@ -377,7 +385,7 @@ class CloudClient:
             "overviewContent": {
                 "format": "text",
                 "plainText": recognized_text,
-                "latexText": "",
+                "latexText": latex_text,
             },
             "material": {
                 "paper": job.title,
@@ -400,7 +408,7 @@ class CloudClient:
                     "content": {
                         "format": "text",
                         "plainText": recognized_text,
-                        "latexText": "",
+                        "latexText": latex_text,
                     },
                     "options": [],
                     "answer": "",

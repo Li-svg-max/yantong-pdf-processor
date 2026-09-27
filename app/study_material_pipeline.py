@@ -6,7 +6,7 @@ from typing import Callable, Iterable, Sequence
 
 import pdfplumber
 import pypdfium2 as pdfium
-from PIL import Image
+from PIL import Image, ImageOps
 
 from .pdf_pipeline import RapidOcrMarkerDetector
 
@@ -29,39 +29,29 @@ def _clean_line(value: object) -> str:
 
 
 def split_paragraphs(value: str) -> list[str]:
-    """Convert page OCR/text lines into compact, editable paragraphs."""
-    lines = [_clean_line(line) for line in str(value or "").replace("\r", "\n").split("\n")]
+    """Split for selection without rewriting, joining lines, or dropping punctuation."""
+    source = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
     paragraphs: list[str] = []
     current = ""
-
-    def flush() -> None:
-        nonlocal current
-        if current:
+    for line in source.splitlines(keepends=True):
+        if current and len(current) + len(line) > MAX_BLOCK_CHARS:
+            paragraphs.append(current)
+            current = ""
+        current += line
+        while len(current) > MAX_BLOCK_CHARS:
             paragraphs.append(current[:MAX_BLOCK_CHARS])
-            overflow = current[MAX_BLOCK_CHARS:]
-            while overflow:
-                paragraphs.append(overflow[:MAX_BLOCK_CHARS])
-                overflow = overflow[MAX_BLOCK_CHARS:]
-        current = ""
-
-    for line in lines:
-        if not line:
-            flush()
-            continue
-        if current and (_HEADING.match(line) or _SENTENCE_END.search(current)):
-            flush()
-        if not current:
-            current = line
-        elif current.endswith(("-", "—")):
-            current = current[:-1] + line
-        elif re.search(r"[A-Za-z0-9)]$", current) and re.match(r"^[A-Za-z0-9(]", line):
-            current += " " + line
-        else:
-            current += line
-        if len(current) >= MAX_BLOCK_CHARS:
-            flush()
-    flush()
-    return [item for item in paragraphs if re.search(r"[\w\u4e00-\u9fff]", item)]
+            current = current[MAX_BLOCK_CHARS:]
+        if current.strip() and (not line.strip() or _SENTENCE_END.search(line.rstrip())):
+            paragraphs.append(current)
+            current = ""
+    if current:
+        if not current.strip() and paragraphs:
+            paragraphs[-1] += current
+        elif current.strip():
+            paragraphs.append(current)
+    # Whitespace-only source is not a selectable paragraph, but no meaningful
+    # source character is otherwise removed or normalized.
+    return paragraphs
 
 
 def _candidate_key(value: str) -> str:
@@ -168,7 +158,7 @@ def _blocks_from_pages(pages: Iterable[tuple[int, str, float, str]]) -> list[dic
                     "text": paragraph,
                     "confidence": round(max(0.0, min(1.0, confidence)), 4),
                     "source": source,
-                    "blanks": suggest_blanks(paragraph, block_id),
+                    "blanks": [],
                 }
             )
     if not blocks:
@@ -200,7 +190,7 @@ def process_study_pdf(
                 direct = _clean_line(text_document.pages[page_index].extract_text() or "")
                 # Restore likely paragraph breaks retained by pdfplumber before whitespace cleanup.
                 raw = text_document.pages[page_index].extract_text() or ""
-                direct = "\n".join(_clean_line(line) for line in raw.splitlines())
+                direct = raw
             compact = re.sub(r"\s+", "", direct)
             if len(compact) >= 24:
                 pages.append((page_index + 1, direct, 1.0, "pdf_text"))
@@ -236,7 +226,9 @@ def process_study_images(
     for index, source in enumerate(sources):
         try:
             with Image.open(source) as opened:
-                image = opened.convert("RGB")
+                if opened.width * opened.height > 50_000_000:
+                    raise ValueError("图片像素过大，请压缩或裁剪后重试")
+                image = ImageOps.exif_transpose(opened).convert("RGB")
         except Exception as error:
             raise RuntimeError(f"无法读取第 {index + 1} 张图片: {error}") from error
         result = extractor.extract_text_fast(image) or {}

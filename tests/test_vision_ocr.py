@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import shutil
+import json
 import unittest
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 from app.pdf_pipeline import ProcessedQuestion
-from app.vision_ocr import VisionOcrSettings, VisionQuestionRecognizer, enhance_questions_with_vision
+from app.vision_ocr import VisionOcrSettings, VisionQuestionRecognizer, enhance_questions_with_vision, _looks_incomplete, _image_parts
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -102,6 +103,34 @@ class VisionOcrTests(unittest.TestCase):
         )
         settings = VisionOcrSettings(api_key="", mode="all")
         self.assertEqual(enhance_questions_with_vision([question], "数学一", settings), [question])
+
+    def test_complete_interval_is_not_a_truncated_bracket(self) -> None:
+        self.assertFalse(_looks_incomplete({}, "求函数 $f(x)=x$ 在区间 $[0,1)$ 上的值域。", ""))
+        self.assertTrue(_looks_incomplete({}, "设函数满足条件，则", ""))
+
+    def test_overlength_images_are_not_silently_truncated(self) -> None:
+        image_path = WORK / "small.png"
+        Image.new("RGB", (80, 80), "white").save(image_path)
+        with self.assertRaisesRegex(RuntimeError, "超过 4"):
+            _image_parts([image_path] * 5)
+
+    def test_failed_repair_keeps_first_result_and_billed_usage(self) -> None:
+        image_path = WORK / "partial.png"
+        Image.new("RGB", (80, 80), "white").save(image_path)
+        attempts = []
+        def requester(*args):
+            attempts.append(1)
+            if len(attempts) == 2:
+                raise RuntimeError("repair timeout")
+            return {"choices": [{"message": {"content": json.dumps({"questions": [{"stem": "设函数满足极限条件，则", "confidence": 0.97}]})}}], "usage": {"prompt_tokens": 120, "completion_tokens": 30}}
+        question = ProcessedQuestion(number_label="1", summary="第 1 题", recognized_text="草稿", text_source="rapidocr_full_crop", text_confidence=0.5, image_paths=(image_path,), source_pages=(1,), detection_source="rapidocr", image_quality={})
+        result = VisionQuestionRecognizer(VisionOcrSettings(api_key="test-key"), requester=requester).recognize(question, "数学二")
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(result.recognized_text, "设函数满足极限条件，则")
+        self.assertEqual(result.recognition_metrics["status"], "needs_review")
+        self.assertEqual(result.recognition_metrics["totalTokens"], 150)
+        self.assertEqual(result.recognition_metrics["calls"], 2)
+        self.assertLessEqual(result.text_confidence, 0.5)
 
 
 if __name__ == "__main__":

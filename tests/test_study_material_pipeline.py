@@ -6,10 +6,18 @@ from pathlib import Path
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 
-from app.study_material_pipeline import process_study_pdf, split_paragraphs, suggest_blanks
+from app.study_material_pipeline import process_study_pdf, split_paragraphs, suggest_blanks, _blocks_from_pages
 
 
 class StudyMaterialPipelineTests(unittest.TestCase):
+    def test_recognition_preserves_lines_spaces_and_does_not_mine(self) -> None:
+        source = "第一章\n  定义：保留  空格。\n\nEnglish-\nword\t原文！\n"
+        blocks = _blocks_from_pages([(1, source, 0.95, 'ocr')])
+        self.assertEqual(''.join(block['text'] for block in blocks), source)
+        self.assertTrue(all(not block['blanks'] for block in blocks))
+        long = '文字' * 3000 + '\n'
+        self.assertEqual(''.join(split_paragraphs(long)), long)
+
     def test_paragraph_split_preserves_readable_units(self) -> None:
         value = "第一章 数据结构\n线性表是由有限个数据元素组成的序列。\n\n特点：顺序存储、链式存储。"
         paragraphs = split_paragraphs(value)
